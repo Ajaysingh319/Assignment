@@ -30,17 +30,20 @@ class OrderTransactionalWriter {
     private final ProductRepository productRepository;
     private final InventoryReservationService inventoryReservationService;
     private final AuditLogRepository auditLogRepository;
+    private final com.assignment.fulfilment.events.publisher.OutboxService outboxService;
 
     public OrderTransactionalWriter(
             OrderRepository orderRepository,
             ProductRepository productRepository,
             InventoryReservationService inventoryReservationService,
-            AuditLogRepository auditLogRepository
+            AuditLogRepository auditLogRepository,
+            com.assignment.fulfilment.events.publisher.OutboxService outboxService
     ) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.inventoryReservationService = inventoryReservationService;
         this.auditLogRepository = auditLogRepository;
+        this.outboxService = outboxService;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -91,6 +94,15 @@ class OrderTransactionalWriter {
                 "SYSTEM",
                 "idempotencyKey=" + idempotencyKey + ", totalAmount=" + totalAmount + ", currency=" + request.currency()
         ));
+
+        outboxService.publish(
+                "ORDER",
+                saved.getId().toString(),
+                "ORDER_CREATED",
+                1,
+                "{\"orderId\":\"" + saved.getId() + "\",\"status\":\"PENDING_PAYMENT\",\"currency\":\"" + saved.getCurrency() + "\",\"totalAmount\":" + saved.getTotalAmount() + "}",
+                null
+        );
 
         List<OrderItemResponse> itemResponses = saved.getItems().stream()
                 .map(item -> new OrderItemResponse(

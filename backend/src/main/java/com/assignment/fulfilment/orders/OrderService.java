@@ -26,17 +26,20 @@ public class OrderService {
     private final OrderTransactionalWriter orderTransactionalWriter;
     private final InventoryReservationService inventoryReservationService;
     private final AuditLogRepository auditLogRepository;
+    private final com.assignment.fulfilment.events.publisher.OutboxService outboxService;
 
     public OrderService(
             OrderRepository orderRepository,
             OrderTransactionalWriter orderTransactionalWriter,
             InventoryReservationService inventoryReservationService,
-            AuditLogRepository auditLogRepository
+            AuditLogRepository auditLogRepository,
+            com.assignment.fulfilment.events.publisher.OutboxService outboxService
     ) {
         this.orderRepository = orderRepository;
         this.orderTransactionalWriter = orderTransactionalWriter;
         this.inventoryReservationService = inventoryReservationService;
         this.auditLogRepository = auditLogRepository;
+        this.outboxService = outboxService;
     }
 
     /**
@@ -120,6 +123,14 @@ public class OrderService {
                     "SYSTEM",
                     "Order confirmed"
             ));
+            outboxService.publish(
+                    "ORDER",
+                    order.getId().toString(),
+                    "ORDER_CONFIRMED",
+                    1,
+                    "{\"orderId\":\"" + order.getId() + "\",\"status\":\"CONFIRMED\"}",
+                    null
+            );
         }
         return toResponse(order);
     }
@@ -148,6 +159,14 @@ public class OrderService {
                     "SYSTEM",
                     "Order cancelled and reservations released"
             ));
+            outboxService.publish(
+                    "ORDER",
+                    order.getId().toString(),
+                    "ORDER_CANCELLED",
+                    1,
+                    "{\"orderId\":\"" + order.getId() + "\",\"status\":\"CANCELLED\"}",
+                    null
+            );
         }
         return toResponse(order);
     }
@@ -176,6 +195,14 @@ public class OrderService {
                     "SYSTEM",
                     "Order fulfilled and reservations completed"
             ));
+            outboxService.publish(
+                    "ORDER",
+                    order.getId().toString(),
+                    "ORDER_FULFILLED",
+                    1,
+                    "{\"orderId\":\"" + order.getId() + "\",\"status\":\"FULFILLED\"}",
+                    null
+            );
         }
         return toResponse(order);
     }
@@ -214,6 +241,14 @@ public class OrderService {
                 "SYSTEM",
                 "Order expired due to timeout and reservations released"
         ));
+        outboxService.publish(
+                "ORDER",
+                order.getId().toString(),
+                "ORDER_EXPIRED",
+                1,
+                "{\"orderId\":\"" + order.getId() + "\",\"status\":\"CANCELLED\"}",
+                null
+        );
         return toResponse(order);
     }
 
