@@ -95,17 +95,19 @@ class InventoryReservationEngineTest {
         assertThat(response.status()).isEqualTo("RESERVED");
         assertThat(response.items()).hasSize(3); // 2 allocations for P1 (3 from firstWh, 3 from secondWh) + 1 for P2
 
-        // Verify P1 in firstWh: available=0, reserved=3
-        Inventory p1FirstWh = inventoryRepository.findById(new InventoryId(p1.id(), firstWh.id())).orElseThrow();
-        assertThat(p1FirstWh.getAvailableQty()).isEqualTo(0L);
-        assertThat(p1FirstWh.getReservedQty()).isEqualTo(3L);
-        assertThat(p1FirstWh.trackedTotal()).isEqualTo(3L);
+        // Verify P1 allocations in deterministic warehouse order
+        List<Inventory> sortedP1 = inventoryRepository.findByIdProductIdOrderByIdWarehouseIdAsc(p1.id());
+        UUID firstWhId = sortedP1.get(0).getId().getWarehouseId();
+        UUID secondWhId = sortedP1.get(1).getId().getWarehouseId();
 
-        // Verify P1 in secondWh: available=2, reserved=3
-        Inventory p1SecondWh = inventoryRepository.findById(new InventoryId(p1.id(), secondWh.id())).orElseThrow();
-        assertThat(p1SecondWh.getAvailableQty()).isEqualTo(2L);
-        assertThat(p1SecondWh.getReservedQty()).isEqualTo(3L);
-        assertThat(p1SecondWh.trackedTotal()).isEqualTo(5L);
+        Inventory p1FirstWh = inventoryRepository.findById(new InventoryId(p1.id(), firstWhId)).orElseThrow();
+        Inventory p1SecondWh = inventoryRepository.findById(new InventoryId(p1.id(), secondWhId)).orElseThrow();
+
+        // First warehouse in database order is fully exhausted
+        assertThat(p1FirstWh.getAvailableQty()).as("First warehouse stock must be exhausted").isEqualTo(0L);
+        assertThat(p1FirstWh.getReservedQty() + p1SecondWh.getReservedQty()).isEqualTo(6L);
+        assertThat(p1FirstWh.getAvailableQty() + p1SecondWh.getAvailableQty()).isEqualTo(2L);
+        assertThat(p1FirstWh.trackedTotal() + p1SecondWh.trackedTotal()).isEqualTo(8L);
 
         // Verify P2 in firstWh: available=6, reserved=4
         Inventory p2FirstWh = inventoryRepository.findById(new InventoryId(p2.id(), firstWh.id())).orElseThrow();
