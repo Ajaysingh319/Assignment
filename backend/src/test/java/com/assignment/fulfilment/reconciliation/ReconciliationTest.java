@@ -156,21 +156,22 @@ class ReconciliationTest {
         assertThat(record.getDetails()).contains("INVENTORY_RELEASE_AUDIT_REQUIRED");
     }
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
     @Test
     @DisplayName("Detect Mismatch 4: Stale pending orders and payments beyond configurable age")
     void testMismatch4StalePendingOrderAndPayment() throws Exception {
         OrderResponse order = createOrderHelper(1L, 10L);
 
-        // Age the order artificially by modifying createdAt field
-        Order ord = orderRepository.findById(order.id()).orElseThrow();
+        // Age the order artificially by modifying createdAt field in database
         Instant twoHoursAgo = Instant.now().minus(Duration.ofHours(2));
-        setField(ord, "createdAt", twoHoursAgo);
-        orderRepository.save(ord);
+        jdbcTemplate.update("UPDATE orders SET created_at = ? WHERE id = ?", java.sql.Timestamp.from(twoHoursAgo), order.id());
 
-        // Create stale payment
+        // Create stale payment and age it in database
         Payment payment = new Payment(order.id(), "stale-ref-" + UUID.randomUUID(), PaymentStatus.PENDING, new BigDecimal("25.00"), "USD");
-        setField(payment, "createdAt", twoHoursAgo);
-        paymentRepository.save(payment);
+        payment = paymentRepository.save(payment);
+        jdbcTemplate.update("UPDATE payments SET created_at = ? WHERE id = ?", java.sql.Timestamp.from(twoHoursAgo), payment.getId());
 
         ReconciliationRunResponse run = reconciliationService.runReconciliation();
 
