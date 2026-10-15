@@ -1,5 +1,6 @@
 package com.assignment.fulfilment.orders.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
@@ -13,6 +14,7 @@ public record CreateOrderItemRequest(
         @Min(value = 1, message = "quantity must be at least 1")
         Long quantity,
 
+        @JsonAlias({"price", "unit_price"})
         BigDecimal unitPrice
 ) {
 }

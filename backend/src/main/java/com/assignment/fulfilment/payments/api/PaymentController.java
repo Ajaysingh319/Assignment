@@ -30,7 +30,7 @@ public class PaymentController {
 
     @PostMapping("/orders/{orderId}/payments/simulate")
     public ResponseEntity<PaymentResponse> simulatePayment(
-            @PathVariable UUID orderId,
+            @PathVariable("orderId") UUID orderId,
             @Valid @RequestBody SimulatePaymentRequest request
     ) {
         PaymentResponse response = paymentService.simulatePayment(orderId, request);
@@ -47,27 +47,27 @@ public class PaymentController {
 
     @GetMapping("/payments")
     public ResponseEntity<List<PaymentResponse>> listPayments(
-            @RequestParam(required = false) UUID orderId,
-            @RequestParam(required = false) PaymentStatus status
+            @RequestParam(name = "orderId", required = false) UUID orderId,
+            @RequestParam(name = "status", required = false) PaymentStatus status
     ) {
         return ResponseEntity.ok(paymentService.listPayments(orderId, status));
     }
 
     @GetMapping("/payments/{paymentId}")
-    public ResponseEntity<PaymentResponse> getPayment(@PathVariable UUID paymentId) {
+    public ResponseEntity<PaymentResponse> getPayment(@PathVariable("paymentId") UUID paymentId) {
         return ResponseEntity.ok(paymentService.getPayment(paymentId));
     }
 
     @GetMapping("/payments/callbacks")
     public ResponseEntity<List<com.assignment.fulfilment.payments.dto.PaymentCallbackResponse>> listCallbacks(
-            @RequestParam(required = false) UUID paymentId
+            @RequestParam(name = "paymentId", required = false) UUID paymentId
     ) {
         return ResponseEntity.ok(paymentService.listCallbacks(paymentId));
     }
 
     @GetMapping("/payments/{paymentId}/callbacks")
     public ResponseEntity<List<com.assignment.fulfilment.payments.dto.PaymentCallbackResponse>> listPaymentCallbacks(
-            @PathVariable UUID paymentId
+            @PathVariable("paymentId") UUID paymentId
     ) {
         return ResponseEntity.ok(paymentService.listCallbacks(paymentId));
     }

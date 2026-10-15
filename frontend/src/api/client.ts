@@ -91,11 +91,18 @@ export const api = {
   getOrder: (id: string) =>
     request<Order>(`/api/orders/${encodeURIComponent(id)}`),
 
-  createOrder: (idempotencyKey: string, payload: { currency: string; items: { productId: string; quantity: number; price: number }[] }) =>
+  createOrder: (idempotencyKey: string, payload: { currency: string; items: { productId: string; quantity: number; unitPrice?: number; price?: number }[] }) =>
     request<Order>("/api/orders", {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        currency: payload.currency,
+        items: payload.items.map((it) => ({
+          productId: it.productId,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice ?? it.price,
+        })),
+      }),
     }),
 
   confirmOrder: (id: string) =>
@@ -135,16 +142,25 @@ export const api = {
   getPayment: (id: string) =>
     request<Payment>(`/api/payments/${encodeURIComponent(id)}`),
 
-  simulatePayment: (orderId: string, payload: { providerReference?: string; status: PaymentStatus; amount: number; currency?: string }) =>
+  simulatePayment: (orderId: string, payload: { providerReference?: string; outcome?: string; status?: PaymentStatus; amount?: number; currency?: string }) =>
     request<Payment>(`/api/orders/${encodeURIComponent(orderId)}/payments/simulate`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        outcome: payload.outcome ?? payload.status,
+        amount: payload.amount,
+        currency: payload.currency,
+      }),
     }),
 
-  processPaymentCallback: (payload: { callbackId: string; providerReference?: string; orderId?: string; status: PaymentStatus; amount: number; currency?: string }) =>
+  processPaymentCallback: (payload: { callbackId: string; paymentId: string; providerReference?: string; status?: PaymentStatus; result?: string }) =>
     request<Payment>("/api/payments/callbacks", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        callbackId: payload.callbackId,
+        paymentId: payload.paymentId,
+        providerReference: payload.providerReference,
+        result: payload.result ?? payload.status,
+      }),
     }),
 
   getPaymentCallbacks: (paymentId?: string) =>

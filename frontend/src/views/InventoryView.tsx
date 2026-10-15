@@ -22,7 +22,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
   const [adjustModalOpen, setAdjustModalOpen] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState("");
   const [selectedWarehouseId, setSelectedWarehouseId] = useState("");
-  const [adjustQuantity, setAdjustQuantity] = useState<number>(10);
+  const [adjustQuantity, setAdjustQuantity] = useState<string>("10");
   const [adjusting, setAdjusting] = useState(false);
 
   const fetchInventory = useCallback(async () => {
@@ -66,11 +66,16 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
       onNotify("error", "Please select both product and warehouse");
       return;
     }
+    const qty = parseInt(adjustQuantity, 10);
+    if (isNaN(qty) || qty === 0) {
+      onNotify("error", "Quantity adjustment must be a non-zero integer");
+      return;
+    }
     setAdjusting(true);
     try {
-      const res = await api.adjustInventory(selectedProductId, selectedWarehouseId, adjustQuantity);
+      const res = await api.adjustInventory(selectedProductId, selectedWarehouseId, qty);
       setInventoryItems(res.items || []);
-      onNotify("success", `Inventory adjusted by ${adjustQuantity} units`);
+      onNotify("success", `Inventory adjusted by ${qty} units`);
       setAdjustModalOpen(false);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to adjust stock";
@@ -192,6 +197,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
                     <th>Tracked Total</th>
                     <th>Stock Allocation</th>
                     <th>Last Updated</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -227,6 +233,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
                         </td>
                         <td className="text-secondary text-sm">
                           {new Date(wh.updatedAt).toLocaleTimeString()}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-ghost"
+                            onClick={() => {
+                              setSelectedProductId(prod.productId);
+                              setSelectedWarehouseId(wh.warehouseId);
+                              setAdjustQuantity("10");
+                              setAdjustModalOpen(true);
+                            }}
+                          >
+                            Adjust
+                          </button>
                         </td>
                       </tr>
                     );
@@ -306,7 +326,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
               id="adjust-quantity"
               type="number"
               value={adjustQuantity}
-              onChange={(e) => setAdjustQuantity(parseInt(e.target.value) || 0)}
+              onChange={(e) => setAdjustQuantity(e.target.value)}
+              placeholder="e.g. 10 or -5"
               required
             />
             <span className="text-secondary text-xs mt-1">

@@ -26,7 +26,7 @@ public class EventController {
 
     @GetMapping("/failures")
     public ResponseEntity<List<EventFailureResponse>> listFailures(
-            @RequestParam(required = false) EventFailureStatus status
+            @RequestParam(name = "status", required = false) EventFailureStatus status
     ) {
         return ResponseEntity.ok(eventService.listFailures(status));
     }
@@ -42,12 +42,12 @@ public class EventController {
     }
 
     @GetMapping("/failures/{failureId}")
-    public ResponseEntity<EventFailureResponse> getFailure(@PathVariable UUID failureId) {
+    public ResponseEntity<EventFailureResponse> getFailure(@PathVariable("failureId") UUID failureId) {
         return ResponseEntity.ok(eventService.getFailure(failureId));
     }
 
     @PostMapping("/failures/{failureId}/retry")
-    public ResponseEntity<EventFailureResponse> retryFailure(@PathVariable UUID failureId) {
+    public ResponseEntity<EventFailureResponse> retryFailure(@PathVariable("failureId") UUID failureId) {
         return ResponseEntity.ok(eventService.retryFailure(failureId));
     }
 

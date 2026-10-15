@@ -33,20 +33,20 @@ public class ReconciliationController {
 
     @GetMapping("/records")
     public ResponseEntity<List<ReconciliationRecordResponse>> listRecords(
-            @RequestParam(required = false) ReconciliationStatus status,
-            @RequestParam(required = false) String mismatchType
+            @RequestParam(name = "status", required = false) ReconciliationStatus status,
+            @RequestParam(name = "mismatchType", required = false) String mismatchType
     ) {
         return ResponseEntity.ok(reconciliationService.listRecords(status, mismatchType));
     }
 
     @GetMapping("/records/{recordId}")
-    public ResponseEntity<ReconciliationRecordResponse> getRecord(@PathVariable UUID recordId) {
+    public ResponseEntity<ReconciliationRecordResponse> getRecord(@PathVariable("recordId") UUID recordId) {
         return ResponseEntity.ok(reconciliationService.getRecord(recordId));
     }
 
     @PostMapping("/records/{recordId}/resolve")
     public ResponseEntity<ReconciliationRecordResponse> resolveRecord(
-            @PathVariable UUID recordId,
+            @PathVariable("recordId") UUID recordId,
             @RequestBody(required = false) ResolveMismatchRequest request
     ) {
         return ResponseEntity.ok(reconciliationService.resolveRecord(recordId, request));

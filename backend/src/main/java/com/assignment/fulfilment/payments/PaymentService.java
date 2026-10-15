@@ -134,21 +134,29 @@ public class PaymentService {
         if (request.callbackId() == null || request.callbackId().isBlank()) {
             throw new IllegalArgumentException("callbackId must not be blank");
         }
-        if (request.paymentId() == null) {
-            throw new IllegalArgumentException("paymentId must not be null");
+        UUID resolvedId = request.paymentId();
+        if (resolvedId == null && request.orderId() != null) {
+            resolvedId = paymentRepository.findByOrderId(request.orderId()).stream()
+                    .findFirst()
+                    .map(Payment::getId)
+                    .orElse(null);
         }
+        if (resolvedId == null) {
+            throw new IllegalArgumentException("paymentId must not be null (or provide valid orderId with associated payment)");
+        }
+        final UUID targetPaymentId = resolvedId;
 
         // Fast check: duplicate callback ID deduplication
         if (paymentCallbackRepository.existsByProviderCallbackId(request.callbackId())) {
             log.info("Duplicate callback ID {} detected. Skipping duplicate callback processing.", request.callbackId());
-            Payment payment = paymentRepository.findById(request.paymentId())
-                    .orElseThrow(() -> new NoSuchElementException("Payment not found: " + request.paymentId()));
+            Payment payment = paymentRepository.findById(targetPaymentId)
+                    .orElseThrow(() -> new NoSuchElementException("Payment not found: " + targetPaymentId));
             return PaymentResponse.from(payment);
         }
 
         // Lock payment and associated order to prevent race conditions
-        Payment payment = paymentRepository.findByIdForUpdate(request.paymentId())
-                .orElseThrow(() -> new NoSuchElementException("Payment not found: " + request.paymentId()));
+        Payment payment = paymentRepository.findByIdForUpdate(targetPaymentId)
+                .orElseThrow(() -> new NoSuchElementException("Payment not found: " + targetPaymentId));
 
         Order order = orderRepository.findByIdForUpdate(payment.getOrderId())
                 .orElseThrow(() -> new NoSuchElementException("Order not found: " + payment.getOrderId()));

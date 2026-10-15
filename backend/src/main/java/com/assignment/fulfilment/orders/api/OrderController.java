@@ -39,33 +39,33 @@ public class OrderController {
 
     @GetMapping
     public ResponseEntity<List<OrderResponse>> listOrders(
-            @RequestParam(required = false) OrderStatus status
+            @RequestParam(name = "status", required = false) OrderStatus status
     ) {
         return ResponseEntity.ok(orderService.listOrders(status));
     }
 
     @GetMapping("/{orderId}")
-    public ResponseEntity<OrderResponse> getOrder(@PathVariable UUID orderId) {
+    public ResponseEntity<OrderResponse> getOrder(@PathVariable("orderId") UUID orderId) {
         return ResponseEntity.ok(orderService.getOrder(orderId));
     }
 
     @PostMapping("/{orderId}/confirm")
-    public ResponseEntity<OrderResponse> confirmOrder(@PathVariable UUID orderId) {
+    public ResponseEntity<OrderResponse> confirmOrder(@PathVariable("orderId") UUID orderId) {
         return ResponseEntity.ok(orderService.confirmOrder(orderId));
     }
 
     @PostMapping("/{orderId}/cancel")
-    public ResponseEntity<OrderResponse> cancelOrder(@PathVariable UUID orderId) {
+    public ResponseEntity<OrderResponse> cancelOrder(@PathVariable("orderId") UUID orderId) {
         return ResponseEntity.ok(orderService.cancelOrder(orderId));
     }
 
     @PostMapping("/{orderId}/fulfil")
-    public ResponseEntity<OrderResponse> fulfilOrder(@PathVariable UUID orderId) {
+    public ResponseEntity<OrderResponse> fulfilOrder(@PathVariable("orderId") UUID orderId) {
         return ResponseEntity.ok(orderService.fulfilOrder(orderId));
     }
 
     @PostMapping("/{orderId}/expire")
-    public ResponseEntity<OrderResponse> expireOrder(@PathVariable UUID orderId) {
+    public ResponseEntity<OrderResponse> expireOrder(@PathVariable("orderId") UUID orderId) {
         return ResponseEntity.ok(orderService.expireOrder(orderId));
     }
 }

@@ -33,9 +33,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
 
   // Create Order Modal State
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [createItemProductId, setCreateItemProductId] = useState("");
-  const [createItemQty, setCreateItemQty] = useState(1);
-  const [createItemPrice, setCreateItemPrice] = useState(25.0);
+  const [lineItems, setLineItems] = useState<{ productId: string; quantity: string; unitPrice: string }[]>([
+    { productId: "", quantity: "1", unitPrice: "25.00" }
+  ]);
   const [createCurrency, setCreateCurrency] = useState("USD");
 
   // Simulate Payment Modal State
@@ -66,13 +66,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
     try {
       const data = await api.getProducts();
       setProducts(data);
-      if (data.length > 0 && !createItemProductId) {
-        setCreateItemProductId(data[0].id);
+      if (data.length > 0) {
+        setLineItems((prev) =>
+          prev.map((item) => (item.productId ? item : { ...item, productId: data[0].id }))
+        );
       }
     } catch {
       // Ignore if catalog not populated yet
     }
-  }, [createItemProductId]);
+  }, []);
 
   useEffect(() => {
     fetchOrders();
@@ -124,24 +126,70 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
     }
   };
 
+  const handleAddItem = () => {
+    setLineItems((prev) => [
+      ...prev,
+      { productId: products[0]?.id || "", quantity: "1", unitPrice: "25.00" },
+    ]);
+  };
+
+  const handleRemoveItem = (index: number) => {
+    setLineItems((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateItem = (
+    index: number,
+    field: "productId" | "quantity" | "unitPrice",
+    value: string
+  ) => {
+    setLineItems((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+    );
+  };
+
+  const openCreateOrderModal = () => {
+    setLineItems([
+      { productId: products[0]?.id || "", quantity: "1", unitPrice: "25.00" },
+    ]);
+    setCreateModalOpen(true);
+  };
+
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!createItemProductId) {
-      onNotify("error", "Please select a product");
+    if (lineItems.length === 0) {
+      onNotify("error", "At least one item is required");
       return;
     }
+
+    for (let i = 0; i < lineItems.length; i++) {
+      const it = lineItems[i];
+      if (!it.productId) {
+        onNotify("error", `Please select a product for line item #${i + 1}`);
+        return;
+      }
+      const qty = parseInt(it.quantity, 10);
+      if (isNaN(qty) || qty < 1) {
+        onNotify("error", `Quantity for item #${i + 1} must be an integer >= 1`);
+        return;
+      }
+      const pr = parseFloat(it.unitPrice);
+      if (isNaN(pr) || pr < 0) {
+        onNotify("error", `Unit price for item #${i + 1} must be a valid number >= 0`);
+        return;
+      }
+    }
+
     setActionLoading(true);
     const key = `dash-key-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     try {
       const newOrder = await api.createOrder(key, {
         currency: createCurrency,
-        items: [
-          {
-            productId: createItemProductId,
-            quantity: createItemQty,
-            price: createItemPrice,
-          },
-        ],
+        items: lineItems.map((it) => ({
+          productId: it.productId,
+          quantity: parseInt(it.quantity, 10),
+          price: parseFloat(it.unitPrice),
+          unitPrice: parseFloat(it.unitPrice),
+        })),
       });
       onNotify("success", `Order created! (ID: ${newOrder.id.substring(0, 8)})`);
       setCreateModalOpen(false);
@@ -200,7 +248,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => setCreateModalOpen(true)}
+            onClick={openCreateOrderModal}
           >
             + Create Order
           </button>
@@ -244,7 +292,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
               : `There are currently no orders with status '${filter}'.`
           }
           actionLabel="+ Create First Order"
-          onAction={() => setCreateModalOpen(true)}
+          onAction={openCreateOrderModal}
         />
       ) : (
         <div className="card table-card">
@@ -450,72 +498,151 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         isOpen={createModalOpen}
         onClose={() => setCreateModalOpen(false)}
         title="Create New Order"
-        maxWidth="md"
+        maxWidth="lg"
       >
         <form onSubmit={handleCreateOrder} className="form-container">
-          <div className="form-group">
-            <label htmlFor="create-product-select">Select Product</label>
-            {products.length > 0 ? (
-              <select
-                id="create-product-select"
-                value={createItemProductId}
-                onChange={(e) => setCreateItemProductId(e.target.value)}
-                required
-              >
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku})
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                id="create-product-select"
-                type="text"
-                placeholder="Product UUID"
-                value={createItemProductId}
-                onChange={(e) => setCreateItemProductId(e.target.value)}
-                required
-              />
-            )}
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="create-quantity">Quantity</label>
-              <input
-                id="create-quantity"
-                type="number"
-                min="1"
-                value={createItemQty}
-                onChange={(e) => setCreateItemQty(parseInt(e.target.value) || 1)}
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="create-unit-price">Unit Price</label>
-              <input
-                id="create-unit-price"
-                type="number"
-                step="0.01"
-                min="0.01"
-                value={createItemPrice}
-                onChange={(e) => setCreateItemPrice(parseFloat(e.target.value) || 0)}
-                required
-              />
-            </div>
-            <div className="form-group">
+          <div className="form-row" style={{ alignItems: "flex-end" }}>
+            <div className="form-group" style={{ flex: "0 0 160px" }}>
               <label htmlFor="create-currency">Currency</label>
               <select
                 id="create-currency"
                 value={createCurrency}
                 onChange={(e) => setCreateCurrency(e.target.value)}
               >
-                <option value="USD">USD</option>
-                <option value="EUR">EUR</option>
-                <option value="GBP">GBP</option>
+                <option value="USD">USD ($)</option>
+                <option value="EUR">EUR (€)</option>
+                <option value="GBP">GBP (£)</option>
               </select>
             </div>
+            <div className="form-group" style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleAddItem}
+              >
+                + Add Another Product
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginTop: "8px" }}>
+            <label style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--color-text-secondary)" }}>
+              Line Items ({lineItems.length})
+            </label>
+            {lineItems.map((item, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 110px 130px auto",
+                  gap: "10px",
+                  alignItems: "center",
+                  padding: "10px 12px",
+                  borderRadius: "8px",
+                  background: "rgba(255, 255, 255, 0.02)",
+                  border: "1px solid var(--color-border)",
+                }}
+              >
+                <div>
+                  <label style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+                    Product #{idx + 1}
+                  </label>
+                  {products.length > 0 ? (
+                    <select
+                      value={item.productId}
+                      onChange={(e) => handleUpdateItem(idx, "productId", e.target.value)}
+                      required
+                    >
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.sku})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder="Product UUID"
+                      value={item.productId}
+                      onChange={(e) => handleUpdateItem(idx, "productId", e.target.value)}
+                      required
+                    />
+                  )}
+                </div>
+
+                <div>
+                  <label style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+                    Quantity
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="1"
+                    value={item.quantity}
+                    onChange={(e) => handleUpdateItem(idx, "quantity", e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: "0.75rem", color: "var(--color-text-secondary)" }}>
+                    Unit Price ({createCurrency})
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={item.unitPrice}
+                    onChange={(e) => handleUpdateItem(idx, "unitPrice", e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div style={{ paddingTop: "18px" }}>
+                  {lineItems.length > 1 ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: "var(--color-danger, #ef4444)", padding: "6px 8px" }}
+                      onClick={() => handleRemoveItem(idx)}
+                      title="Remove item"
+                    >
+                      ✕
+                    </button>
+                  ) : (
+                    <span style={{ display: "inline-block", width: "24px" }} />
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              padding: "12px 16px",
+              background: "rgba(59, 130, 246, 0.08)",
+              borderRadius: "8px",
+              border: "1px solid rgba(59, 130, 246, 0.2)",
+              marginTop: "8px",
+            }}
+          >
+            <span style={{ fontSize: "0.9rem", color: "var(--color-text-secondary)" }}>
+              Calculated Total Amount
+            </span>
+            <span style={{ fontSize: "1.15rem", fontWeight: 700, color: "var(--color-text-primary)" }}>
+              {createCurrency}{" "}
+              {lineItems
+                .reduce((acc, it) => {
+                  const q = parseInt(it.quantity, 10);
+                  const p = parseFloat(it.unitPrice);
+                  return acc + (isNaN(q) ? 0 : q) * (isNaN(p) ? 0 : p);
+                }, 0)
+                .toFixed(2)}
+            </span>
           </div>
 
           <div className="modal-footer">

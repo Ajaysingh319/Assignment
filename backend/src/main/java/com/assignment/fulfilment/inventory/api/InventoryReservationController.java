@@ -31,17 +31,17 @@ public class InventoryReservationController {
     }
 
     @PostMapping("/{orderId}/cancel")
-    public ReservationResponse cancel(@PathVariable UUID orderId) {
+    public ReservationResponse cancel(@PathVariable("orderId") UUID orderId) {
         return reservationService.cancel(orderId);
     }
 
     @PostMapping("/{orderId}/fulfil")
-    public ReservationResponse fulfil(@PathVariable UUID orderId) {
+    public ReservationResponse fulfil(@PathVariable("orderId") UUID orderId) {
         return reservationService.fulfil(orderId);
     }
 
     @GetMapping("/{orderId}")
-    public ReservationResponse getReservations(@PathVariable UUID orderId) {
+    public ReservationResponse getReservations(@PathVariable("orderId") UUID orderId) {
         return reservationService.getReservations(orderId);
     }
 }
