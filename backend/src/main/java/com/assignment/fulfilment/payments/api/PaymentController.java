@@ -57,4 +57,18 @@ public class PaymentController {
     public ResponseEntity<PaymentResponse> getPayment(@PathVariable UUID paymentId) {
         return ResponseEntity.ok(paymentService.getPayment(paymentId));
     }
+
+    @GetMapping("/payments/callbacks")
+    public ResponseEntity<List<com.assignment.fulfilment.payments.dto.PaymentCallbackResponse>> listCallbacks(
+            @RequestParam(required = false) UUID paymentId
+    ) {
+        return ResponseEntity.ok(paymentService.listCallbacks(paymentId));
+    }
+
+    @GetMapping("/payments/{paymentId}/callbacks")
+    public ResponseEntity<List<com.assignment.fulfilment.payments.dto.PaymentCallbackResponse>> listPaymentCallbacks(
+            @PathVariable UUID paymentId
+    ) {
+        return ResponseEntity.ok(paymentService.listCallbacks(paymentId));
+    }
 }

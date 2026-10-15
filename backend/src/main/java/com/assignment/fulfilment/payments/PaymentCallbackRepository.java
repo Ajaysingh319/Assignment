@@ -10,4 +10,8 @@ public interface PaymentCallbackRepository extends JpaRepository<PaymentCallback
     boolean existsByProviderCallbackId(String providerCallbackId);
 
     Optional<PaymentCallback> findByProviderCallbackId(String providerCallbackId);
+
+    java.util.List<PaymentCallback> findAllByOrderByReceivedAtDesc();
+
+    java.util.List<PaymentCallback> findByPaymentIdOrderByReceivedAtDesc(UUID paymentId);
 }

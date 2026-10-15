@@ -266,4 +266,12 @@ public class PaymentService {
         }
         return paymentRepository.findAllByOrderByCreatedAtDesc().stream().map(PaymentResponse::from).toList();
     }
+
+    @Transactional(readOnly = true)
+    public List<com.assignment.fulfilment.payments.dto.PaymentCallbackResponse> listCallbacks(UUID paymentId) {
+        List<com.assignment.fulfilment.payments.domain.PaymentCallback> list = paymentId != null
+                ? paymentCallbackRepository.findByPaymentIdOrderByReceivedAtDesc(paymentId)
+                : paymentCallbackRepository.findAllByOrderByReceivedAtDesc();
+        return list.stream().map(com.assignment.fulfilment.payments.dto.PaymentCallbackResponse::from).toList();
+    }
 }
