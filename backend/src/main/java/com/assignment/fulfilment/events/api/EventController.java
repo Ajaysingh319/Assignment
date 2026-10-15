@@ -31,9 +31,29 @@ public class EventController {
         return ResponseEntity.ok(eventService.listFailures(status));
     }
 
+    @GetMapping("/failures/dead-lettered")
+    public ResponseEntity<List<EventFailureResponse>> listDeadLettered() {
+        return ResponseEntity.ok(eventService.listFailures(EventFailureStatus.DEAD_LETTERED));
+    }
+
+    @GetMapping("/failures/summary")
+    public ResponseEntity<com.assignment.fulfilment.events.dto.EventFailureSummaryResponse> getSummary() {
+        return ResponseEntity.ok(eventService.getSummary());
+    }
+
+    @GetMapping("/failures/{failureId}")
+    public ResponseEntity<EventFailureResponse> getFailure(@PathVariable UUID failureId) {
+        return ResponseEntity.ok(eventService.getFailure(failureId));
+    }
+
     @PostMapping("/failures/{failureId}/retry")
     public ResponseEntity<EventFailureResponse> retryFailure(@PathVariable UUID failureId) {
         return ResponseEntity.ok(eventService.retryFailure(failureId));
+    }
+
+    @PostMapping("/failures/retry-eligible")
+    public ResponseEntity<List<EventFailureResponse>> retryEligibleFailures() {
+        return ResponseEntity.ok(eventService.retryEligibleFailures());
     }
 
     @PostMapping("/outbox/publish")

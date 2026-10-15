@@ -17,9 +17,12 @@ public record EventFailureResponse(
         String payload,
         Instant firstFailedAt,
         Instant lastFailedAt,
-        Instant resolvedAt
+        Instant resolvedAt,
+        boolean eligibleForRetry
 ) {
     public static EventFailureResponse from(EventFailure failure) {
+        boolean eligible = failure.getStatus() == com.assignment.fulfilment.events.domain.EventFailureStatus.DEAD_LETTERED
+                || failure.getStatus() == com.assignment.fulfilment.events.domain.EventFailureStatus.RETRYING;
         return new EventFailureResponse(
                 failure.getId(),
                 failure.getEventId(),
@@ -33,7 +36,8 @@ public record EventFailureResponse(
                 failure.getPayload(),
                 failure.getFirstFailedAt(),
                 failure.getLastFailedAt(),
-                failure.getResolvedAt()
+                failure.getResolvedAt(),
+                eligible
         );
     }
 }

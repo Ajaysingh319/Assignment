@@ -13,5 +13,9 @@ public interface EventFailureRepository extends JpaRepository<EventFailure, UUID
 
     List<EventFailure> findByStatusOrderByFirstFailedAtDesc(EventFailureStatus status);
 
+    List<EventFailure> findByStatusInOrderByFirstFailedAtDesc(java.util.Collection<EventFailureStatus> statuses);
+
     Optional<EventFailure> findByEventIdAndConsumerName(String eventId, String consumerName);
+
+    long countByStatus(EventFailureStatus status);
 }

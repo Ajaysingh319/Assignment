@@ -127,4 +127,23 @@ public class EventRetryHandler {
 
         return saved;
     }
+
+    @Transactional
+    public EventFailure recordManualRetryFailure(UUID failureId, String error) {
+        EventFailure failure = eventFailureRepository.findById(failureId)
+                .orElseThrow(() -> new NoSuchElementException("Event failure not found: " + failureId));
+
+        failure.recordRetry("Manual retry error: " + error, maxRetries);
+        EventFailure saved = eventFailureRepository.save(failure);
+
+        auditLogRepository.save(new AuditLog(
+                "event_failure",
+                failureId.toString(),
+                "EVENT_RETRY_FAILED",
+                "OPERATOR",
+                "Manual retry failed for eventId=" + failure.getEventId() + ": " + error
+        ));
+
+        return saved;
+    }
 }
