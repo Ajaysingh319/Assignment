@@ -79,6 +79,19 @@ public class GlobalExceptionHandler {
         return error(HttpStatus.CONFLICT, exception.getMessage(), request, List.of());
     }
 
+    @ExceptionHandler(com.assignment.fulfilment.common.exception.InsufficientStockException.class)
+    public ResponseEntity<ApiError> handleInsufficientStock(
+            com.assignment.fulfilment.common.exception.InsufficientStockException exception,
+            HttpServletRequest request
+    ) {
+        return error(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request,
+                List.of("Insufficient stock for product " + exception.getProductId())
+        );
+    }
+
     @ExceptionHandler(DuplicateIdentifierException.class)
     public ResponseEntity<ApiError> handleDuplicate(
             DuplicateIdentifierException exception,
