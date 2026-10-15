@@ -213,6 +213,45 @@ public class InventoryReservationService {
     }
 
     /**
+     * Confirms reservations for the given order at most once.
+     */
+    @Transactional
+    public ReservationResponse confirm(UUID orderId) {
+        if (orderId == null) {
+            throw new IllegalArgumentException("orderId must not be null");
+        }
+
+        List<Reservation> reservations = reservationRepository.findByOrderIdForUpdate(orderId);
+        if (reservations.isEmpty()) {
+            throw new NoSuchElementException("No reservations found for order: " + orderId);
+        }
+
+        reservations.sort(Comparator.comparing(Reservation::getProductId)
+                .thenComparing(Reservation::getWarehouseId));
+
+        for (Reservation reservation : reservations) {
+            if (reservation.getStatus() == ReservationStatus.RESERVED) {
+                reservation.confirm();
+                reservationRepository.save(reservation);
+
+                auditLogRepository.save(new AuditLog(
+                        "reservation",
+                        reservation.getId().toString(),
+                        "STOCK_CONFIRMED",
+                        "SYSTEM",
+                        "orderId=" + orderId + ", qty=" + reservation.getQuantity()
+                ));
+            }
+        }
+
+        return new ReservationResponse(
+                orderId,
+                determineAggregateStatus(reservations),
+                reservations.stream().map(ReservationItemResponse::from).toList()
+        );
+    }
+
+    /**
      * Moves reserved quantities to fulfilled quantities for the given order at most once.
      */
     @Transactional

@@ -124,6 +124,45 @@ public class GlobalExceptionHandler {
         return error(HttpStatus.CONFLICT, "Data integrity violation", request, List.of());
     }
 
+    @ExceptionHandler(com.assignment.fulfilment.common.exception.IdempotencyConflictException.class)
+    public ResponseEntity<ApiError> handleIdempotencyConflict(
+            com.assignment.fulfilment.common.exception.IdempotencyConflictException exception,
+            HttpServletRequest request
+    ) {
+        return error(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request,
+                List.of("Idempotency key: " + exception.getIdempotencyKey())
+        );
+    }
+
+    @ExceptionHandler(com.assignment.fulfilment.common.exception.InvalidOrderStateTransitionException.class)
+    public ResponseEntity<ApiError> handleInvalidTransition(
+            com.assignment.fulfilment.common.exception.InvalidOrderStateTransitionException exception,
+            HttpServletRequest request
+    ) {
+        return error(
+                HttpStatus.CONFLICT,
+                exception.getMessage(),
+                request,
+                List.of("Cannot transition from " + exception.getFromStatus() + " to " + exception.getTargetStatus())
+        );
+    }
+
+    @ExceptionHandler(org.springframework.web.bind.MissingRequestHeaderException.class)
+    public ResponseEntity<ApiError> handleMissingHeader(
+            org.springframework.web.bind.MissingRequestHeaderException exception,
+            HttpServletRequest request
+    ) {
+        return error(
+                HttpStatus.BAD_REQUEST,
+                "Missing required header: " + exception.getHeaderName(),
+                request,
+                List.of(exception.getMessage())
+        );
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleUnexpected(
             Exception exception,
