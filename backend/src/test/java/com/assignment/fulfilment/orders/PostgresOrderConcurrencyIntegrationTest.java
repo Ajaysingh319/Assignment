@@ -56,14 +56,12 @@ import org.springframework.test.context.ActiveProfiles;
  * Prove that 100 simultaneous purchase requests against inventory containing exactly 10 available units
  * cannot oversell stock.
  *
- * Rules:
- * - Uses real PostgreSQL and the 'postgres-test' profile (strictly disallows H2 or mocks).
- * - Fires 100 concurrent HTTP POST requests to the actual Spring Boot HTTP endpoint (/api/orders).
- * - Uses unique idempotency keys per request.
- * - Uses a synchronization barrier (CountDownLatch) to ensure concurrent request initiation.
- * - Records every HTTP status, response body, order ID, and failure reason.
- * - Verifies zero oversell: exactly 10 succeed (HTTP 201), exactly 90 fail with insufficient stock (HTTP 409).
- * - Verifies database state: availableQty = 0, reservedQty = 10, exactly 10 distinct orders in DB.
+ * Key Concurrency Mechanics:
+ * - Real 100-worker thread pool (Executors.newFixedThreadPool(100)).
+ * - Readiness latch (readyLatch) ensuring all 100 workers are in memory and blocked before release.
+ * - Start barrier (startBarrier) releasing all 100 workers at the exact same instant.
+ * - HTTP 409 body inspection verifying specific 'Insufficient stock' error (distinguishing other conflicts).
+ * - Comprehensive reservation audit across all rows matching product and warehouse in PostgreSQL.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("postgres-test")
@@ -175,10 +173,11 @@ public class PostgresOrderConcurrencyIntegrationTest {
                 .as("Initial reserved quantity must be exactly 0")
                 .isEqualTo(0L);
 
-        // 3. Prepare 100 concurrent HTTP purchase requests
+        // 3. Prepare true 100-request concurrency
         int totalRequests = 100;
-        ExecutorService executor = Executors.newFixedThreadPool(50);
-        CountDownLatch barrierLatch = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(totalRequests);
+        CountDownLatch readyLatch = new CountDownLatch(totalRequests);
+        CountDownLatch startBarrier = new CountDownLatch(1);
         CountDownLatch completionLatch = new CountDownLatch(totalRequests);
 
         ConcurrentLinkedQueue<HttpResponseRecord> responseRecords = new ConcurrentLinkedQueue<>();
@@ -212,10 +211,13 @@ public class PostgresOrderConcurrencyIntegrationTest {
                     """.formatted(product.id());
 
             executor.submit(() -> {
-                long requestStart = System.currentTimeMillis();
+                // Signal that this worker is initialized and ready
+                readyLatch.countDown();
+                long requestStart = 0;
                 try {
-                    // Synchronized start barrier: all 100 threads wait here to burst together
-                    barrierLatch.await();
+                    // Block until ALL 100 workers are ready and the barrier is tripped
+                    startBarrier.await();
+                    requestStart = System.currentTimeMillis();
 
                     HttpRequest httpRequest = HttpRequest.newBuilder()
                             .uri(URI.create(targetUrl))
@@ -234,18 +236,47 @@ public class PostgresOrderConcurrencyIntegrationTest {
                     String failureReason = null;
 
                     if (status == 201) {
-                        successCount.incrementAndGet();
-                        JsonNode jsonNode = objectMapper.readTree(body);
-                        orderId = UUID.fromString(jsonNode.get("id").asText());
-                        successfulOrderIds.add(orderId);
-                    } else if (status == 409) {
-                        insufficientStockCount.incrementAndGet();
-                        failedIdempotencyKeys.add(idempotencyKey);
                         try {
                             JsonNode jsonNode = objectMapper.readTree(body);
-                            failureReason = jsonNode.has("message") ? jsonNode.get("message").asText() : body;
+                            orderId = UUID.fromString(jsonNode.get("id").asText());
+                            successfulOrderIds.add(orderId);
+                            successCount.incrementAndGet();
+                        } catch (Exception ex) {
+                            unexpectedErrorCount.incrementAndGet();
+                            failureReason = "Malformed JSON in 201 response: " + ex.getMessage();
+                        }
+                    } else if (status == 409) {
+                        // Inspect response body to strictly verify it represents InsufficientStockException
+                        boolean isInsufficientStock = false;
+                        String rejectionMessage = null;
+                        try {
+                            JsonNode jsonNode = objectMapper.readTree(body);
+                            rejectionMessage = jsonNode.has("message") ? jsonNode.get("message").asText() : "";
+                            boolean messageMatches = rejectionMessage.contains("Insufficient stock");
+                            boolean detailsMatch = false;
+                            if (jsonNode.has("details") && jsonNode.get("details").isArray()) {
+                                for (JsonNode detail : jsonNode.get("details")) {
+                                    if (detail.asText().contains("Insufficient stock")) {
+                                        detailsMatch = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (messageMatches || detailsMatch) {
+                                isInsufficientStock = true;
+                            }
                         } catch (Exception e) {
-                            failureReason = body;
+                            failureReason = "Malformed JSON in 409 response: " + body;
+                        }
+
+                        if (isInsufficientStock) {
+                            insufficientStockCount.incrementAndGet();
+                            failedIdempotencyKeys.add(idempotencyKey);
+                            failureReason = rejectionMessage;
+                        } else {
+                            // Any other conflict (e.g. idempotency collision, data integrity) is an unexpected error
+                            unexpectedErrorCount.incrementAndGet();
+                            failureReason = "HTTP 409 Conflict was NOT an insufficient-stock error: " + (rejectionMessage != null ? rejectionMessage : body);
                         }
                     } else {
                         unexpectedErrorCount.incrementAndGet();
@@ -257,9 +288,9 @@ public class PostgresOrderConcurrencyIntegrationTest {
                     ));
                 } catch (Exception ex) {
                     unexpectedErrorCount.incrementAndGet();
+                    long duration = requestStart > 0 ? (System.currentTimeMillis() - requestStart) : 0;
                     responseRecords.add(new HttpResponseRecord(
-                            requestIndex, idempotencyKey, 0, null, null, ex.getMessage(),
-                            System.currentTimeMillis() - requestStart
+                            requestIndex, idempotencyKey, 0, null, null, ex.getMessage(), duration
                     ));
                 } finally {
                     completionLatch.countDown();
@@ -267,33 +298,42 @@ public class PostgresOrderConcurrencyIntegrationTest {
             });
         }
 
+        // 4. Verify all 100 workers reach the barrier
+        boolean allWorkersReady = readyLatch.await(15, TimeUnit.SECONDS);
+        if (!allWorkersReady) {
+            executor.shutdownNow();
+            throw new AssertionError("Timed out waiting for all " + totalRequests + " worker threads to reach ready barrier state");
+        }
+
         // Release all 100 threads simultaneously through the barrier
-        barrierLatch.countDown();
+        startBarrier.countDown();
         boolean finishedInTime = completionLatch.await(90, TimeUnit.SECONDS);
-        assertThat(finishedInTime).as("All 100 concurrent requests must complete within 90 seconds").isTrue();
         executor.shutdown();
+        if (!finishedInTime) {
+            executor.shutdownNow();
+            throw new AssertionError("All " + totalRequests + " concurrent requests did not complete within 90 seconds");
+        }
 
         long totalExecutionTime = System.currentTimeMillis() - startTime;
 
-        // 4. Query final database inventory state
+        // 5. Query final database inventory state
         Inventory finalInventory = inventoryRepository.findById(new InventoryId(product.id(), warehouse.id()))
                 .orElseThrow(() -> new IllegalStateException("Final inventory record missing"));
 
-        // 5. Query orders and reservations from database
+        // 6. Query orders from database
         List<Order> savedOrders = orderRepository.findAll().stream()
                 .filter(o -> successfulOrderIds.contains(o.getId()))
                 .toList();
 
-        List<Reservation> productReservations = reservationRepository.findByOrderId(
-                savedOrders.isEmpty() ? UUID.randomUUID() : savedOrders.get(0).getId()
+        // 7. Independent PostgreSQL audit of ALL reservations for this test product and warehouse
+        List<Reservation> allReservationsInDb = reservationRepository.findByProductIdAndWarehouseId(
+                product.id(), warehouse.id()
         );
-        // Query all reservations for this product across all orders
-        List<Reservation> allReservationsForProduct = new ArrayList<>();
-        for (UUID sId : successfulOrderIds) {
-            allReservationsForProduct.addAll(reservationRepository.findByOrderId(sId));
-        }
+        long totalReservedQuantityInDb = allReservationsInDb.stream()
+                .mapToLong(Reservation::getQuantity)
+                .sum();
 
-        // 6. Assertions verification
+        // 8. Assertions verification
         boolean pass = true;
         List<String> assertionFailures = new ArrayList<>();
 
@@ -303,7 +343,7 @@ public class PostgresOrderConcurrencyIntegrationTest {
         }
         if (insufficientStockCount.get() != 90) {
             pass = false;
-            assertionFailures.add("Expected exactly 90 insufficient-stock rejections, but got: " + insufficientStockCount.get());
+            assertionFailures.add("Expected exactly 90 verified insufficient-stock rejections, but got: " + insufficientStockCount.get());
         }
         if (unexpectedErrorCount.get() != 0) {
             pass = false;
@@ -335,14 +375,24 @@ public class PostgresOrderConcurrencyIntegrationTest {
                 assertionFailures.add("Order " + o.getId() + " is in unexpected state: " + o.getStatus());
             }
         }
-        if (allReservationsForProduct.size() != 10) {
+
+        // Reservation table audit assertions
+        if (allReservationsInDb.size() != 10) {
             pass = false;
-            assertionFailures.add("Expected exactly 10 active reservations for product, but found: " + allReservationsForProduct.size());
+            assertionFailures.add("Expected exactly 10 reservation rows for test product in DB, but found: " + allReservationsInDb.size());
         }
-        for (Reservation r : allReservationsForProduct) {
+        if (totalReservedQuantityInDb != 10L) {
+            pass = false;
+            assertionFailures.add("Expected sum of reservation quantities = 10, but got: " + totalReservedQuantityInDb);
+        }
+        for (Reservation r : allReservationsInDb) {
             if (r.getStatus() != ReservationStatus.RESERVED || r.getQuantity() != 1L) {
                 pass = false;
                 assertionFailures.add("Reservation " + r.getId() + " has invalid status or quantity: " + r.getStatus() + ", " + r.getQuantity());
+            }
+            if (!successfulOrderIds.contains(r.getOrderId())) {
+                pass = false;
+                assertionFailures.add("Orphan reservation detected not belonging to any successful order: " + r.getId() + ", orderId: " + r.getOrderId());
             }
         }
 
@@ -355,7 +405,7 @@ public class PostgresOrderConcurrencyIntegrationTest {
             }
         }
 
-        // 7. Print concise test report
+        // 9. Print concise test report
         System.out.println("""
             ================================================================================
                                 POSTGRES CONCURRENCY TEST REPORT
@@ -366,11 +416,14 @@ public class PostgresOrderConcurrencyIntegrationTest {
             Warehouse ID:                    %s
             --------------------------------------------------------------------------------
             Total requests:                  %d
-            Successful purchases:            %d
-            Insufficient-stock rejections:   %d
+            Workers ready at barrier:        %d
+            Successful purchases (201):      %d
+            Verified stock rejections (409): %d
             Unexpected errors:               %d
             Final available quantity:        %d
             Final reserved quantity:         %d
+            Total reservations in DB:        %d
+            Total reserved units in DB:      %d
             Total execution time:            %d ms
             --------------------------------------------------------------------------------
             RESULT:                          %s
@@ -380,11 +433,14 @@ public class PostgresOrderConcurrencyIntegrationTest {
                 product.id(),
                 warehouse.id(),
                 totalRequests,
+                totalRequests,
                 successCount.get(),
                 insufficientStockCount.get(),
                 unexpectedErrorCount.get(),
                 finalInventory.getAvailableQty(),
                 finalInventory.getReservedQty(),
+                allReservationsInDb.size(),
+                totalReservedQuantityInDb,
                 totalExecutionTime,
                 pass ? "PASS" : "FAIL"
         ));
@@ -396,7 +452,7 @@ public class PostgresOrderConcurrencyIntegrationTest {
             }
         }
 
-        // 8. Assert JUnit conditions
+        // 10. Assert JUnit conditions
         assertThat(assertionFailures).as("Concurrency test assertions must have zero failures").isEmpty();
         assertThat(pass).as("Test result must be PASS").isTrue();
     }
