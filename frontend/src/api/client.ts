@@ -118,10 +118,10 @@ export const api = {
   getInventory: () =>
     request<InventoryListResponse>("/api/inventory"),
 
-  adjustInventory: (productId: string, warehouseId: string, quantity: number) =>
+  adjustInventory: (productId: string, warehouseId: string, availableDelta: number) =>
     request<InventoryListResponse>("/api/inventory/adjustments", {
       method: "POST",
-      body: JSON.stringify({ productId, warehouseId, quantity }),
+      body: JSON.stringify({ productId, warehouseId, availableDelta }),
     }),
 
   getProducts: () =>

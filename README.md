@@ -101,7 +101,7 @@ curl -s http://localhost:8080/api/inventory
 # Adjust inventory stock (+10 units)
 curl -s -X POST http://localhost:8080/api/inventory/adjustments \
   -H "Content-Type: application/json" \
-  -d '{"productId":"<PRODUCT_UUID>","warehouseId":"<WAREHOUSE_UUID>","quantity":10}'
+  -d '{"productId":"<PRODUCT_UUID>","warehouseId":"<WAREHOUSE_UUID>","availableDelta":10}'
 ```
 
 ### 2. Orders
@@ -251,20 +251,35 @@ npm run dev
 
 ## 7. Automated Test Suite
 
-Run the full automated test suite using Maven:
+Run the automated test suite using Maven:
 ```powershell
 cd backend
 mvn clean test
 ```
 
-### Test Suite Highlights
-* **65 tests, 0 failures, 0 errors**:
-  * `InventoryReservationEngineTest`: Concurrency stress test verifying that **100 concurrent threads attempting to reserve 1 unit against 10 stock results in exactly 10 successes and 90 failures**, with final available quantity equal to 0.
-  * `OrderLifecycleTest` & `OrderApiTest`: Tests all valid state machine transitions, rejects illegal transitions, and validates all-or-nothing rollback on insufficient stock.
-  * `OrderServiceIdempotencyTest`: Validates identical payloads returning original order and mismatched payloads triggering HTTP 409 Conflict.
-  * `PaymentProcessingTest` & `PaymentApiTest`: Tests outcome simulations, idempotent duplicate webhook callback deduplication, and late callback handling.
-  * `ReconciliationTest`: Verifies detection of successful payments on cancelled orders, missing payments on confirmed orders, reservation state discrepancies, and idempotent re-execution.
-  * `EventProcessingTest` & `FailedEventWorkflowTest`: Tests outbox record creation, consumer deduplication via `processed_events`, retry backoff limits, and DLT routing.
+### Test Suite Execution & Infrastructure Boundaries
+
+The test suite explicitly distinguishes between in-memory hermetic tests and live infrastructure integration tests:
+
+1. **Hermetic In-Memory (H2 PostgreSQL Compatibility Mode) Tests**:
+   * Run by default on every build without external services.
+   * `InventoryReservationEngineTest`: Concurrency stress test verifying that **100 concurrent threads attempting to reserve 1 unit against 10 stock results in exactly 10 successes and 90 failures**, with final available quantity equal to 0.
+   * `OrderLifecycleTest` & `OrderApiTest`: Tests all valid state machine transitions, rejects illegal transitions, and validates all-or-nothing rollback on insufficient stock.
+   * `OrderServiceIdempotencyTest`: Validates identical payloads returning original order and mismatched payloads triggering HTTP 409 Conflict.
+   * `PaymentProcessingTest` & `PaymentApiTest`: Tests outcome simulations, idempotent duplicate webhook callback deduplication, and late callback handling.
+   * `ReconciliationTest`: Verifies detection of successful payments on cancelled orders, missing payments on confirmed orders, reservation state discrepancies, and idempotent re-execution.
+   * `EventProcessingTest` & `FailedEventWorkflowTest`: Tests outbox record creation, consumer deduplication via `processed_events`, retry backoff limits, and DLT routing.
+   * `InventoryReservationApiTest`: Tests stock adjustments via `availableDelta`, reservation lifecycles, and rollback.
+
+2. **Live PostgreSQL Concurrency Integration Test (`PostgresInventoryConcurrencyIntegrationTest`)**:
+   * Requires a running PostgreSQL instance with configured credentials (`DATABASE_PASSWORD`, `DATABASE_URL`, `DATABASE_USERNAME`).
+   * Validates whether PostgreSQL is actually usable via JDBC before executing. If credentials are not configured or PostgreSQL is unreachable, the test is cleanly skipped (never failed with authentication errors, and never falsely reported as passing).
+   * When enabled, executes 100 concurrent threads against PostgreSQL row locks, verifying all-or-nothing rollback and prevention of overselling against a real database.
+
+3. **Live Kafka Broker Integration Test (`KafkaBrokerIntegrationTest`)**:
+   * Requires an active Kafka broker listening on `localhost:9092`.
+   * Checks socket availability before execution. If Kafka is unavailable, the test is cleanly skipped.
+   * When enabled, produces and consumes partition-keyed messages directly against the broker.
 
 ---
 

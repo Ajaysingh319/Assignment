@@ -476,7 +476,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
                 <th>Product ID</th>
                 <th>Quantity</th>
                 <th>Unit Price</th>
-                <th>Total Price</th>
+                <th>Line Total</th>
               </tr>
             </thead>
             <tbody>
@@ -484,12 +484,48 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
                 <tr key={item.id}>
                   <td className="font-mono text-xs">{item.productId}</td>
                   <td>{item.quantity}</td>
-                  <td>{selectedOrder.currency} {item.unitPrice}</td>
-                  <td className="font-medium">{selectedOrder.currency} {item.totalPrice}</td>
+                  <td>{selectedOrder.currency} {Number(item.unitPrice).toFixed(2)}</td>
+                  <td className="font-medium">{selectedOrder.currency} {Number(item.lineTotal ?? item.totalPrice ?? (item.quantity * item.unitPrice)).toFixed(2)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          <h4 className="mt-4 mb-2">Stock Reservations</h4>
+          {selectedOrder.reservations && selectedOrder.reservations.length > 0 ? (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Reservation ID</th>
+                  <th>Warehouse ID</th>
+                  <th>Product ID</th>
+                  <th>Quantity</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedOrder.reservations.map((res) => (
+                  <tr key={res.id}>
+                    <td className="font-mono text-xs">{res.id}</td>
+                    <td className="font-mono text-xs">{res.warehouseId}</td>
+                    <td className="font-mono text-xs">{res.productId}</td>
+                    <td className="font-medium">{res.quantity}</td>
+                    <td>
+                      <span className={`badge ${
+                        res.status === 'RESERVED' ? 'badge-primary' :
+                        res.status === 'FULFILLED' ? 'badge-success' :
+                        res.status === 'RELEASED' ? 'badge-secondary' : 'badge-warning'
+                      }`}>
+                        {res.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-secondary text-sm">No warehouse reservations recorded for this order.</p>
+          )}
         </Modal>
       )}
 

@@ -64,10 +64,27 @@ class PostgresInventoryConcurrencyIntegrationTest {
     private InventoryRepository inventoryRepository;
 
     static boolean isPostgresAvailable() {
-        try (Socket socket = new Socket()) {
-            socket.connect(new java.net.InetSocketAddress("localhost", 5432), 300);
-            return true;
+        String url = System.getProperty("spring.datasource.url",
+                System.getenv().getOrDefault("DATABASE_URL", "jdbc:postgresql://localhost:5432/fulfilment"));
+        String username = System.getProperty("spring.datasource.username",
+                System.getenv().getOrDefault("DATABASE_USERNAME", "postgres"));
+        String password = System.getProperty("spring.datasource.password",
+                System.getenv("DATABASE_PASSWORD"));
+
+        if (password == null || password.isBlank()) {
+            System.err.println("SKIPPED: PostgreSQL test credentials (DATABASE_PASSWORD) are not set. Skipping live PostgreSQL integration test.");
+            return false;
+        }
+
+        try {
+            java.sql.DriverManager.setLoginTimeout(3);
+            try (java.sql.Connection conn = java.sql.DriverManager.getConnection(url, username, password);
+                 java.sql.Statement stmt = conn.createStatement()) {
+                stmt.execute("SELECT 1");
+                return true;
+            }
         } catch (Exception e) {
+            System.err.println("SKIPPED: PostgreSQL is not usable at " + url + " with supplied credentials: " + e.getMessage() + ". Skipping live PostgreSQL integration test.");
             return false;
         }
     }

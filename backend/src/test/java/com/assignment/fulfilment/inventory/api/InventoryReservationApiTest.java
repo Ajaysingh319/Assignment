@@ -146,4 +146,55 @@ class InventoryReservationApiTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400));
     }
+
+    @Test
+    @DisplayName("API: stock adjustment succeeds and persists expected inventory change")
+    void testStockAdjustmentSucceedsAndPersists() throws Exception {
+        ProductResponse product = catalogService.createProduct(
+                new CreateProductRequest("SKU-ADJ-" + UUID.randomUUID(), "Adjustment Test Product", null, true)
+        );
+        WarehouseResponse warehouse = catalogService.createWarehouse(
+                new CreateWarehouseRequest("WH-ADJ-" + UUID.randomUUID().toString().substring(0, 8), "Adjustment Test WH", null, true)
+        );
+
+        // 1. Initial adjustment +12 units
+        String payload = """
+                {
+                    "productId": "%s",
+                    "warehouseId": "%s",
+                    "availableDelta": 12
+                }
+                """.formatted(product.id(), warehouse.id());
+
+        mockMvc.perform(post("/api/inventory/adjustments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray());
+
+        // 2. Verify stock persisted via GET
+        mockMvc.perform(get("/api/inventory"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[?(@.productId == '%s')].warehouses[?(@.warehouseId == '%s')].availableQty".formatted(product.id(), warehouse.id()))
+                        .value(org.hamcrest.Matchers.hasItem(12)));
+
+        // 3. Subsequent adjustment -4 units
+        String decrementPayload = """
+                {
+                    "productId": "%s",
+                    "warehouseId": "%s",
+                    "availableDelta": -4
+                }
+                """.formatted(product.id(), warehouse.id());
+
+        mockMvc.perform(post("/api/inventory/adjustments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(decrementPayload))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/inventory"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[?(@.productId == '%s')].warehouses[?(@.warehouseId == '%s')].availableQty".formatted(product.id(), warehouse.id()))
+                        .value(org.hamcrest.Matchers.hasItem(8)));
+    }
 }

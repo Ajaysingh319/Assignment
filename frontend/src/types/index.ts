@@ -1,11 +1,26 @@
 export type OrderStatus = 'PENDING_PAYMENT' | 'CONFIRMED' | 'CANCELLED' | 'FULFILLED';
+export type ReservationStatus = 'PENDING' | 'RESERVED' | 'RELEASED' | 'FULFILLED';
+
+export interface ReservationItem {
+  id: string;
+  orderId: string;
+  productId: string;
+  warehouseId: string;
+  quantity: number;
+  status: ReservationStatus;
+  createdAt: string;
+  updatedAt: string;
+  releasedAt?: string | null;
+  fulfilledAt?: string | null;
+}
 
 export interface OrderItem {
   id: string;
   productId: string;
   quantity: number;
   unitPrice: number;
-  totalPrice: number;
+  lineTotal: number;
+  totalPrice?: number;
 }
 
 export interface Order {
@@ -15,6 +30,7 @@ export interface Order {
   currency: string;
   totalAmount: number;
   items: OrderItem[];
+  reservations?: ReservationItem[];
   createdAt: string;
   updatedAt: string;
   confirmedAt?: string | null;
