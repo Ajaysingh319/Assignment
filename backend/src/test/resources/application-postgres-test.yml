@@ -1,0 +1,40 @@
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/fulfilment}
+    username: ${DATABASE_USERNAME:postgres}
+    password: ${DATABASE_PASSWORD:}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 50
+      minimum-idle: 10
+      connection-timeout: 30000
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+server:
+  tomcat:
+    threads:
+      max: 150
+      min-spare: 25
+
+app:
+  seed:
+    enabled: false
+  kafka:
+    consumer:
+      auto-startup: false
+
+management:
+  health:
+    kafka:
+      enabled: false
