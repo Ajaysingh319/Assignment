@@ -124,11 +124,67 @@ export const api = {
       body: JSON.stringify({ productId, warehouseId, availableDelta }),
     }),
 
+  initializeInventory: (productId: string, warehouseId: string, initialStock: number = 0) =>
+    request<InventoryListResponse>("/api/inventory/initialize", {
+      method: "POST",
+      body: JSON.stringify({ productId, warehouseId, initialStock }),
+    }),
+
   getProducts: () =>
     request<Product[]>("/api/products"),
 
+  getProduct: (id: string) =>
+    request<Product>(`/api/products/${encodeURIComponent(id)}`),
+
+  createProduct: (payload: { sku: string; name: string; description?: string | null; active?: boolean }) =>
+    request<Product>("/api/products", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateProduct: (id: string, payload: { name: string; description?: string | null; active?: boolean }) =>
+    request<Product>(`/api/products/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deactivateProduct: (id: string) =>
+    request<Product>(`/api/products/${encodeURIComponent(id)}/deactivate`, {
+      method: "POST",
+    }),
+
+  deleteProduct: (id: string) =>
+    request<void>(`/api/products/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
   getWarehouses: () =>
     request<Warehouse[]>("/api/warehouses"),
+
+  getWarehouse: (id: string) =>
+    request<Warehouse>(`/api/warehouses/${encodeURIComponent(id)}`),
+
+  createWarehouse: (payload: { code: string; name: string; location?: string | null; active?: boolean }) =>
+    request<Warehouse>("/api/warehouses", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  updateWarehouse: (id: string, payload: { name: string; location?: string | null; active?: boolean }) =>
+    request<Warehouse>(`/api/warehouses/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  deactivateWarehouse: (id: string) =>
+    request<Warehouse>(`/api/warehouses/${encodeURIComponent(id)}/deactivate`, {
+      method: "POST",
+    }),
+
+  deleteWarehouse: (id: string) =>
+    request<void>(`/api/warehouses/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
 
   // Payments
   getPayments: (orderId?: string, status?: PaymentStatus) => {

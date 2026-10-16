@@ -66,14 +66,19 @@ export interface Product {
   name: string;
   description?: string | null;
   active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Warehouse {
   id: string;
   code: string;
   name: string;
+  location?: string | null;
   address?: string | null;
   active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type PaymentStatus = 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT';

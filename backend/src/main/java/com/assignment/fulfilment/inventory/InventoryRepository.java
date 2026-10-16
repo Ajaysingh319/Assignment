@@ -19,6 +19,18 @@ public interface InventoryRepository extends JpaRepository<Inventory, InventoryI
 
     List<Inventory> findByIdProductIdOrderByIdWarehouseIdAsc(UUID productId);
 
+    @Query("select count(i) > 0 from Inventory i where i.id.productId = :productId and i.reservedQty > 0")
+    boolean hasReservedQtyForProduct(@Param("productId") UUID productId);
+
+    @Query("select count(i) > 0 from Inventory i where i.id.warehouseId = :warehouseId and i.reservedQty > 0")
+    boolean hasReservedQtyForWarehouse(@Param("warehouseId") UUID warehouseId);
+
+    @Query("select count(i) > 0 from Inventory i where i.id.productId = :productId")
+    boolean existsByProductId(@Param("productId") UUID productId);
+
+    @Query("select count(i) > 0 from Inventory i where i.id.warehouseId = :warehouseId")
+    boolean existsByWarehouseId(@Param("warehouseId") UUID warehouseId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select i from Inventory i where i.id.productId = :productId order by i.id.warehouseId asc")
     List<Inventory> findForUpdateByProductId(@Param("productId") UUID productId);

@@ -45,13 +45,20 @@ public class InventoryService {
     public InventoryListResponse listGrouped() {
         List<Inventory> rows = inventoryRepository.findAllOrdered();
         Map<UUID, Product> products = productRepository.findAll().stream()
-                .collect(java.util.stream.Collectors.toMap(Product::getId, product -> product));
+                .collect(java.util.stream.Collectors.toMap(Product::getId, product -> product, (a, b) -> a, LinkedHashMap::new));
         Map<UUID, Warehouse> warehouses = warehouseRepository.findAll().stream()
                 .collect(java.util.stream.Collectors.toMap(Warehouse::getId, warehouse -> warehouse));
 
         Map<UUID, List<WarehouseInventoryResponse>> grouped = new LinkedHashMap<>();
+        for (UUID productId : products.keySet()) {
+            grouped.put(productId, new ArrayList<>());
+        }
+
         for (Inventory row : rows) {
             Warehouse warehouse = warehouses.get(row.getId().getWarehouseId());
+            if (warehouse == null) {
+                continue;
+            }
             grouped.computeIfAbsent(row.getId().getProductId(), ignored -> new ArrayList<>())
                     .add(new WarehouseInventoryResponse(
                             warehouse.getId(),
@@ -66,6 +73,7 @@ public class InventoryService {
         }
 
         List<ProductInventoryResponse> items = grouped.entrySet().stream()
+                .filter(entry -> products.containsKey(entry.getKey()))
                 .map(entry -> {
                     Product product = products.get(entry.getKey());
                     return new ProductInventoryResponse(
@@ -77,6 +85,39 @@ public class InventoryService {
                 })
                 .toList();
         return new InventoryListResponse(items);
+    }
+
+    @Transactional
+    public InventoryListResponse initialize(com.assignment.fulfilment.inventory.dto.InitializeInventoryRequest request) {
+        Product product = productRepository.findById(request.productId())
+                .orElseThrow(() -> new NoSuchElementException("Product not found"));
+        Warehouse warehouse = warehouseRepository.findById(request.warehouseId())
+                .orElseThrow(() -> new NoSuchElementException("Warehouse not found"));
+
+        InventoryId id = new InventoryId(product.getId(), warehouse.getId());
+        long initialAvailable = request.initialStock() != null ? request.initialStock() : 0L;
+        if (initialAvailable < 0) {
+            throw new IllegalArgumentException("available quantity cannot be negative");
+        }
+
+        if (inventoryRepository.existsById(id)) {
+            return listGrouped();
+        }
+
+        try {
+            Inventory inventory = new Inventory(id, initialAvailable);
+            inventoryRepository.saveAndFlush(inventory);
+            auditLogRepository.save(new AuditLog(
+                    "inventory",
+                    product.getId() + ":" + warehouse.getId(),
+                    "INVENTORY_INITIALIZED",
+                    "OPERATOR",
+                    "initialStock=" + initialAvailable
+            ));
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // Concurrent initialization safely resolved
+        }
+        return listGrouped();
     }
 
     @Transactional

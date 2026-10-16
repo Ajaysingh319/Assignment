@@ -29,4 +29,9 @@ public class InventoryController {
     public InventoryListResponse adjust(@Valid @RequestBody AdjustInventoryRequest request) {
         return inventoryService.adjust(request);
     }
+
+    @PostMapping("/initialize")
+    public InventoryListResponse initialize(@Valid @RequestBody com.assignment.fulfilment.inventory.dto.InitializeInventoryRequest request) {
+        return inventoryService.initialize(request);
+    }
 }

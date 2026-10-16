@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { API_BASE_URL } from "./api/client";
 import { OrdersView } from "./views/OrdersView";
+import { ProductsView } from "./views/ProductsView";
+import { WarehousesView } from "./views/WarehousesView";
 import { InventoryView } from "./views/InventoryView";
 import { PaymentsView } from "./views/PaymentsView";
 import { ReconciliationView } from "./views/ReconciliationView";
@@ -9,6 +11,8 @@ import { ToastContainer, type ToastMessage } from "./components/Toast";
 
 const NAV_ITEMS = [
   { id: "orders", label: "Orders", icon: "📦" },
+  { id: "products", label: "Products", icon: "🏷️" },
+  { id: "warehouses", label: "Warehouses", icon: "🏭" },
   { id: "inventory", label: "Inventory", icon: "🏢" },
   { id: "payments", label: "Payments", icon: "💳" },
   { id: "reconciliation", label: "Reconciliation", icon: "⚖️" },
@@ -101,6 +105,8 @@ export default function App() {
         {/* Main Content Area */}
         <main className="content" id="main-content">
           {section === "orders" && <OrdersView onNotify={addToast} />}
+          {section === "products" && <ProductsView onNotify={addToast} />}
+          {section === "warehouses" && <WarehousesView onNotify={addToast} />}
           {section === "inventory" && <InventoryView onNotify={addToast} />}
           {section === "payments" && <PaymentsView onNotify={addToast} />}
           {section === "reconciliation" && <ReconciliationView onNotify={addToast} />}

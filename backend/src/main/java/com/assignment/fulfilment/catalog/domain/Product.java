@@ -52,6 +52,16 @@ public class Product {
         this.active = active;
     }
 
+    public void update(String name, String description, boolean active) {
+        this.name = name;
+        this.description = description;
+        this.active = active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
     public UUID getId() {
         return id;
     }

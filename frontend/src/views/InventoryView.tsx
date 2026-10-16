@@ -25,6 +25,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
   const [adjustQuantity, setAdjustQuantity] = useState<string>("10");
   const [adjusting, setAdjusting] = useState(false);
 
+  // Initialization Modal State
+  const [initModalOpen, setInitModalOpen] = useState(false);
+  const [initStock, setInitStock] = useState<string>("20");
+  const [initializing, setInitializing] = useState(false);
+
   const fetchInventory = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -85,6 +90,31 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
     }
   };
 
+  const handleInitStock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProductId || !selectedWarehouseId) {
+      onNotify("error", "Please select both product and warehouse");
+      return;
+    }
+    const qty = parseInt(initStock, 10);
+    if (isNaN(qty) || qty < 0) {
+      onNotify("error", "Initial quantity must be a non-negative integer");
+      return;
+    }
+    setInitializing(true);
+    try {
+      const res = await api.initializeInventory(selectedProductId, selectedWarehouseId, qty);
+      setInventoryItems(res.items || []);
+      onNotify("success", `Inventory record initialized with ${qty} units`);
+      setInitModalOpen(false);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to initialize inventory";
+      onNotify("error", msg);
+    } finally {
+      setInitializing(false);
+    }
+  };
+
   // Aggregate totals
   const totalAvailable = inventoryItems.reduce(
     (acc, p) => acc + p.warehouses.reduce((wAcc, w) => wAcc + w.availableQty, 0),
@@ -116,6 +146,18 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
             disabled={loading}
           >
             ↻ Refresh
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              if (products.length > 0 && !selectedProductId) setSelectedProductId(products[0].id);
+              if (warehouses.length > 0 && !selectedWarehouseId) setSelectedWarehouseId(warehouses[0].id);
+              setInitStock("20");
+              setInitModalOpen(true);
+            }}
+          >
+            + Initialize Stock
           </button>
           <button
             type="button"
@@ -174,17 +216,49 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
                   <h3 className="product-title">{prod.productName}</h3>
                   <span className="product-sku">SKU: {prod.sku}</span>
                 </div>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-ghost"
-                  onClick={() => {
-                    setSelectedProductId(prod.productId);
-                    setAdjustModalOpen(true);
-                  }}
-                >
-                  Adjust Stock
-                </button>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => {
+                      setSelectedProductId(prod.productId);
+                      if (warehouses.length > 0 && !selectedWarehouseId) setSelectedWarehouseId(warehouses[0].id);
+                      setInitStock("20");
+                      setInitModalOpen(true);
+                    }}
+                  >
+                    + Initialize Stock
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => {
+                      setSelectedProductId(prod.productId);
+                      setAdjustModalOpen(true);
+                    }}
+                  >
+                    Adjust Stock
+                  </button>
+                </div>
               </div>
+
+              {prod.warehouses.length === 0 ? (
+                <div style={{ padding: "1.25rem", textAlign: "center", background: "var(--color-bg-secondary)", borderRadius: "var(--radius-md)", marginTop: "0.5rem" }}>
+                  <p className="text-secondary text-sm mb-2">No warehouse inventory initialized for this product yet.</p>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => {
+                      setSelectedProductId(prod.productId);
+                      if (warehouses.length > 0) setSelectedWarehouseId(warehouses[0].id);
+                      setInitStock("20");
+                      setInitModalOpen(true);
+                    }}
+                  >
+                    + Initialize Warehouse Allocation
+                  </button>
+                </div>
+              ) : (
 
               <table className="data-table mt-2">
                 <thead>
@@ -253,6 +327,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
                   })}
                 </tbody>
               </table>
+              )}
             </div>
           ))}
         </div>
@@ -350,6 +425,104 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ onNotify }) => {
               disabled={adjusting}
             >
               {adjusting ? "Adjusting..." : "Apply Adjustment"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Initialize Stock Modal */}
+      <Modal
+        isOpen={initModalOpen}
+        onClose={() => setInitModalOpen(false)}
+        title="Initialize Warehouse Stock"
+        maxWidth="md"
+      >
+        <form onSubmit={handleInitStock} className="form-container">
+          <div className="form-group">
+            <label htmlFor="init-product">Product *</label>
+            {products.length > 0 ? (
+              <select
+                id="init-product"
+                value={selectedProductId}
+                onChange={(e) => setSelectedProductId(e.target.value)}
+                required
+              >
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.sku})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                id="init-product"
+                type="text"
+                placeholder="Product UUID"
+                value={selectedProductId}
+                onChange={(e) => setSelectedProductId(e.target.value)}
+                required
+              />
+            )}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="init-warehouse">Warehouse Facility *</label>
+            {warehouses.length > 0 ? (
+              <select
+                id="init-warehouse"
+                value={selectedWarehouseId}
+                onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                required
+              >
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name} ({w.code})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                id="init-warehouse"
+                type="text"
+                placeholder="Warehouse UUID"
+                value={selectedWarehouseId}
+                onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                required
+              />
+            )}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="init-quantity">Initial Stock Quantity</label>
+            <input
+              id="init-quantity"
+              type="number"
+              min="0"
+              value={initStock}
+              onChange={(e) => setInitStock(e.target.value)}
+              placeholder="e.g. 20"
+              required
+            />
+            <span className="text-secondary text-xs mt-1">
+              Initial available stock count for this product-warehouse combination.
+            </span>
+          </div>
+
+          <div className="modal-footer">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setInitModalOpen(false)}
+              disabled={initializing}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={initializing}
+            >
+              {initializing ? "Initializing..." : "Initialize Allocation"}
             </button>
           </div>
         </form>

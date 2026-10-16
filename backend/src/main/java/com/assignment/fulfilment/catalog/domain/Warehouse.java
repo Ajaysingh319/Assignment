@@ -52,6 +52,16 @@ public class Warehouse {
         this.active = active;
     }
 
+    public void update(String name, String location, boolean active) {
+        this.name = name;
+        this.location = location;
+        this.active = active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
     public UUID getId() {
         return id;
     }

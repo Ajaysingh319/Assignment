@@ -36,18 +36,35 @@ class DevCatalogSeederTest {
 
     @Test
     void explicitDevSeedPopulatesProductWarehouseAndInventory() {
-        Optional<Product> product = productRepository.findBySku("WIDGET-RED");
-        assertThat(product).isPresent();
-        assertThat(product.get().getName()).isEqualTo("Red widget");
+        // Assert 5 products
+        assertThat(productRepository.findBySku("WIDGET-RED")).isPresent()
+                .hasValueSatisfying(p -> assertThat(p.getName()).isEqualTo("Red Widget"));
+        assertThat(productRepository.findBySku("WIDGET-BLUE")).isPresent()
+                .hasValueSatisfying(p -> assertThat(p.getName()).isEqualTo("Blue Widget"));
+        assertThat(productRepository.findBySku("WIDGET-GREEN")).isPresent()
+                .hasValueSatisfying(p -> assertThat(p.getName()).isEqualTo("Green Widget"));
+        assertThat(productRepository.findBySku("WIDGET-PREMIUM")).isPresent()
+                .hasValueSatisfying(p -> assertThat(p.getName()).isEqualTo("Premium Widget"));
+        assertThat(productRepository.findBySku("WIDGET-BLACK")).isPresent()
+                .hasValueSatisfying(p -> assertThat(p.getName()).isEqualTo("Black Widget"));
 
-        Optional<Warehouse> warehouse = warehouseRepository.findByCode("WH-EAST");
-        assertThat(warehouse).isPresent();
-        assertThat(warehouse.get().getName()).isEqualTo("East warehouse");
+        // Assert 2 warehouses
+        Warehouse east = warehouseRepository.findByCode("WH-EAST").orElseThrow();
+        Warehouse west = warehouseRepository.findByCode("WH-WEST").orElseThrow();
+        assertThat(east.getName()).isEqualTo("East Warehouse");
+        assertThat(west.getName()).isEqualTo("West Warehouse");
 
-        InventoryId id = new InventoryId(product.get().getId(), warehouse.get().getId());
-        Optional<Inventory> inventory = inventoryRepository.findById(id);
-        assertThat(inventory).isPresent();
-        assertThat(inventory.get().getAvailableQty()).isEqualTo(10L);
-        assertThat(inventory.get().trackedTotal()).isEqualTo(10L);
+        // Assert inventory records for each product in both warehouses
+        Product red = productRepository.findBySku("WIDGET-RED").orElseThrow();
+        Inventory redEast = inventoryRepository.findById(new InventoryId(red.getId(), east.getId())).orElseThrow();
+        Inventory redWest = inventoryRepository.findById(new InventoryId(red.getId(), west.getId())).orElseThrow();
+        assertThat(redEast.getAvailableQty()).isEqualTo(25L);
+        assertThat(redWest.getAvailableQty()).isEqualTo(15L);
+
+        Product black = productRepository.findBySku("WIDGET-BLACK").orElseThrow();
+        Inventory blackEast = inventoryRepository.findById(new InventoryId(black.getId(), east.getId())).orElseThrow();
+        Inventory blackWest = inventoryRepository.findById(new InventoryId(black.getId(), west.getId())).orElseThrow();
+        assertThat(blackEast.getAvailableQty()).isEqualTo(50L);
+        assertThat(blackWest.getAvailableQty()).isEqualTo(45L);
     }
 }
