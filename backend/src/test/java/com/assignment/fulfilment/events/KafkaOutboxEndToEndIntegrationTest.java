@@ -34,6 +34,8 @@ import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
 @ActiveProfiles("postgres-kafka-test")
+@org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable(named = "DATABASE_PASSWORD", matches = ".+",
+        disabledReason = "Requires live PostgreSQL and Kafka; set DATABASE_PASSWORD to run")
 class KafkaOutboxEndToEndIntegrationTest {
 
     @Autowired

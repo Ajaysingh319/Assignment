@@ -33,6 +33,11 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
 
 app:
+  events:
+    # Separate consumer identity so a dev backend sharing this database cannot process the test events first
+    consumer-name: order-fulfilment-consumer-it
+    retry-backoff-ms: 500
+    outbox-poll-interval-ms: 500
   seed:
     enabled: false
   kafka:

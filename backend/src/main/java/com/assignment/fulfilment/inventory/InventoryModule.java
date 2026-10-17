@@ -1,7 +1,7 @@
 package com.assignment.fulfilment.inventory;
 
 /**
- * Stock, reservation, release, and fulfilment. Business logic is not implemented yet.
+ * Stock, reservation, release, and fulfilment.
  */
 public final class InventoryModule {
 

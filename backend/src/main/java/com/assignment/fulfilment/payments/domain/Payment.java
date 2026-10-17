@@ -92,6 +92,23 @@ public class Payment {
         this.updatedAt = Instant.now();
     }
 
+    public void recordCallbackId(String callbackId) {
+        this.lastCallbackId = callbackId;
+        this.updatedAt = Instant.now();
+    }
+
+    public void markRefunded() {
+        if (this.status != PaymentStatus.SUCCEEDED) {
+            throw new IllegalStateException("Only SUCCEEDED payments can be refunded, current status: " + status);
+        }
+        this.status = PaymentStatus.REFUNDED;
+        this.updatedAt = Instant.now();
+    }
+
+    public boolean isFinal() {
+        return status == PaymentStatus.SUCCEEDED || status == PaymentStatus.FAILED || status == PaymentStatus.REFUNDED;
+    }
+
     public UUID getId() {
         return id;
     }

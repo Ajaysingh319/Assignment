@@ -31,19 +31,22 @@ class OrderTransactionalWriter {
     private final InventoryReservationService inventoryReservationService;
     private final AuditLogRepository auditLogRepository;
     private final com.assignment.fulfilment.events.publisher.OutboxService outboxService;
+    private final OrderRequestRecorder orderRequestRecorder;
 
     public OrderTransactionalWriter(
             OrderRepository orderRepository,
             ProductRepository productRepository,
             InventoryReservationService inventoryReservationService,
             AuditLogRepository auditLogRepository,
-            com.assignment.fulfilment.events.publisher.OutboxService outboxService
+            com.assignment.fulfilment.events.publisher.OutboxService outboxService,
+            OrderRequestRecorder orderRequestRecorder
     ) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.inventoryReservationService = inventoryReservationService;
         this.auditLogRepository = auditLogRepository;
         this.outboxService = outboxService;
+        this.orderRequestRecorder = orderRequestRecorder;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -94,6 +97,8 @@ class OrderTransactionalWriter {
                 "SYSTEM",
                 "idempotencyKey=" + idempotencyKey + ", totalAmount=" + totalAmount + ", currency=" + request.currency()
         ));
+
+        orderRequestRecorder.recordAccepted(idempotencyKey, saved.getId(), request);
 
         outboxService.publish(
                 "ORDER",

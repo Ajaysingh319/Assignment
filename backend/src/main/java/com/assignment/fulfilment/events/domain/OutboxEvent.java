@@ -38,6 +38,9 @@ public class OutboxEvent {
     @Column(name = "published_at")
     private Instant publishedAt;
 
+    @Column(name = "published_via", length = 16)
+    private String publishedVia;
+
     @Column(name = "attempt_count", nullable = false)
     private int attemptCount = 0;
 
@@ -82,8 +85,17 @@ public class OutboxEvent {
         this.attemptCount = 0;
     }
 
-    public void markPublished() {
+    public static final String VIA_KAFKA = "KAFKA";
+    public static final String VIA_SIMULATED = "SIMULATED";
+
+    /**
+     * @param via {@link #VIA_KAFKA} once the broker acknowledged the record, or {@link #VIA_SIMULATED}
+     *            when the explicit test-only simulation mode is enabled.
+     */
+    public void markPublished(String via) {
         this.publishedAt = Instant.now();
+        this.publishedVia = via;
+        this.attemptCount++;
         this.lastError = null;
     }
 
@@ -126,6 +138,10 @@ public class OutboxEvent {
 
     public Instant getPublishedAt() {
         return publishedAt;
+    }
+
+    public String getPublishedVia() {
+        return publishedVia;
     }
 
     public int getAttemptCount() {

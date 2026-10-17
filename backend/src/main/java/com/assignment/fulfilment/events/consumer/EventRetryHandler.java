@@ -69,17 +69,71 @@ public class EventRetryHandler {
 
         if (saved.getStatus() == EventFailureStatus.DEAD_LETTERED) {
             String dltTopic = topic + ".DLT";
-            log.warn("Retries exhausted for event {} on consumer {}. Routing to DLT topic {}", eventId, consumerName, dltTopic);
-            if (kafkaTemplate != null) {
-                try {
-                    kafkaTemplate.send(dltTopic, eventId, payload);
-                } catch (Exception e) {
-                    log.error("Failed to forward dead-lettered event {} to {}", eventId, dltTopic, e);
-                }
-            }
+            log.warn("Retries exhausted for event {} on consumer {} after {} attempts. Routing to DLT topic {}",
+                    eventId, consumerName, saved.getAttemptCount(), dltTopic);
+            forwardToDeadLetterTopic(dltTopic, eventId, payload);
+            auditLogRepository.save(new AuditLog(
+                    "event_failure",
+                    saved.getId().toString(),
+                    "EVENT_DEAD_LETTERED",
+                    consumerName,
+                    "eventId=" + eventId + ", attempts=" + saved.getAttemptCount() + ", dlt=" + dltTopic + ", lastError=" + error
+            ));
+        } else {
+            log.warn("Event {} failed on consumer {} (attempt {}/{}); it will be redelivered",
+                    eventId, consumerName, saved.getAttemptCount(), maxRetries);
         }
 
         return saved;
+    }
+
+    /**
+     * A message that cannot be parsed can never succeed, so it is dead-lettered on the first attempt.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public EventFailure recordPoisonMessage(String topic, Integer partition, Long offset, String consumerName, String rawMessage, String error) {
+        String syntheticId = "unparseable-" + topic + "-" + partition + "-" + offset;
+        EventFailure failure = eventFailureRepository.findByEventIdAndConsumerName(syntheticId, consumerName)
+                .orElseGet(() -> new EventFailure(syntheticId, topic, partition, offset, consumerName, error, rawMessage, 1));
+        EventFailure saved = eventFailureRepository.save(failure);
+        log.error("Unparseable message at {}-{}@{} dead-lettered: {}", topic, partition, offset, error);
+        forwardToDeadLetterTopic(topic + ".DLT", syntheticId, rawMessage);
+        return saved;
+    }
+
+    /**
+     * Called after a successful attempt: if earlier attempts of the same event failed, the failure record is
+     * closed as RESOLVED so the dashboard shows "failed N times, then recovered".
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markRecoveredIfFailing(String eventId, String consumerName) {
+        eventFailureRepository.findByEventIdAndConsumerName(eventId, consumerName)
+                .filter(f -> f.getStatus() == EventFailureStatus.RETRYING || f.getStatus() == EventFailureStatus.REPLAYED)
+                .ifPresent(f -> {
+                    f.markResolved();
+                    eventFailureRepository.save(f);
+                    auditLogRepository.save(new AuditLog(
+                            "event_failure",
+                            f.getId().toString(),
+                            "EVENT_RECOVERED_AFTER_RETRY",
+                            consumerName,
+                            "eventId=" + eventId + " succeeded after " + f.getAttemptCount() + " failed attempt(s)"
+                    ));
+                    log.info("Event {} recovered on consumer {} after {} failed attempt(s)", eventId, consumerName, f.getAttemptCount());
+                });
+    }
+
+    private void forwardToDeadLetterTopic(String dltTopic, String key, String payload) {
+        if (kafkaTemplate == null) {
+            log.warn("KafkaTemplate not available; dead-lettered event {} recorded in event_failures only", key);
+            return;
+        }
+        try {
+            kafkaTemplate.send(dltTopic, key, payload).get(5, java.util.concurrent.TimeUnit.SECONDS);
+            log.info("Dead-lettered event {} forwarded to {}", key, dltTopic);
+        } catch (Exception e) {
+            log.error("Failed to forward dead-lettered event {} to {}; it remains recorded in event_failures", key, dltTopic, e);
+        }
     }
 
     @Transactional(readOnly = true)

@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { api, ApiError } from "../api/client";
-import type { ReconciliationRecord, ReconciliationStatus } from "../types";
+import type { AuditEntry, ReconciliationRecord, ReconciliationStatus } from "../types";
+
+/** Corrective actions that change real business state, by mismatch type (validated again by the backend). */
+const CORRECTIVE_ACTIONS: Record<string, { value: string; label: string }[]> = {
+  PAYMENT_SUCCEEDED_ORDER_CANCELLED: [{ value: "REFUND_PAYMENT", label: "REFUND_PAYMENT (simulated refund; payment → REFUNDED)" }],
+  DUPLICATE_SUCCESSFUL_PAYMENT: [{ value: "REFUND_PAYMENT", label: "REFUND_PAYMENT (refund the latest duplicate charge)" }],
+  PAYMENT_AMOUNT_MISMATCH: [{ value: "REFUND_PAYMENT", label: "REFUND_PAYMENT (refund the mismatched payment)" }],
+  STALE_PENDING_ORDER: [{ value: "EXPIRE_ORDER", label: "EXPIRE_ORDER (cancel order and release its reservations)" }],
+};
 import { Badge } from "../components/Badge";
 import { Spinner } from "../components/Spinner";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -29,7 +37,8 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
 
   // Inspection / Resolution Modal
   const [selectedRecord, setSelectedRecord] = useState<ReconciliationRecord | null>(null);
-  const [resolveAction, setResolveAction] = useState<"RESOLVE" | "DISMISS">("RESOLVE");
+  const [resolveAction, setResolveAction] = useState<string>("RESOLVE");
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [resolveNotes, setResolveNotes] = useState("");
   const [resolving, setResolving] = useState(false);
 
@@ -52,9 +61,19 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
     }
   }, [statusFilter]);
 
+  const fetchAudit = useCallback(async () => {
+    try {
+      const [runs, decisions] = await Promise.all([api.getAudit("reconciliation_run", 20), api.getAudit("reconciliation", 50)]);
+      setAuditEntries([...runs, ...decisions].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+    } catch {
+      // The audit panel is supplementary; the records table shows its own error state
+    }
+  }, []);
+
   useEffect(() => {
     fetchRecords();
-  }, [fetchRecords]);
+    fetchAudit();
+  }, [fetchRecords, fetchAudit]);
 
   const handleRunReconciliation = async () => {
     setRunning(true);
@@ -64,7 +83,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
         "success",
         `Reconciliation run complete! ${result.detectedCount} new mismatch(es) detected, ${result.existingCount} existing.`
       );
-      await fetchRecords();
+      await Promise.all([fetchRecords(), fetchAudit()]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Reconciliation run failed";
       onNotify("error", msg);
@@ -78,15 +97,15 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
     if (!selectedRecord) return;
     setResolving(true);
     try {
-      const updated = await api.resolveReconciliation(
+      const updated = await api.resolveReconciliationWithAction(
         selectedRecord.id,
         resolveAction,
         resolveNotes || undefined
       );
-      onNotify("success", `Record marked ${updated.status} with simulated action`);
+      onNotify("success", `Record ${updated.status} via ${updated.resolutionAction ?? resolveAction}`);
       setSelectedRecord(null);
       setResolveNotes("");
-      await fetchRecords();
+      await Promise.all([fetchRecords(), fetchAudit()]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to resolve record";
       onNotify("error", msg);
@@ -235,7 +254,7 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
                         className="btn btn-sm btn-ghost"
                         onClick={() => {
                           setSelectedRecord(r);
-                          setResolveAction("RESOLVE");
+                          setResolveAction(CORRECTIVE_ACTIONS[r.mismatchType]?.[0]?.value ?? "RESOLVE");
                         }}
                       >
                         Inspect & Resolve
@@ -248,6 +267,29 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
           </table>
         </div>
       )}
+
+      {/* Reconciliation audit trail: every run and every operator decision */}
+      <div className="card table-card" style={{ marginTop: 20 }}>
+        <h4 style={{ margin: "12px 12px 8px" }}>Reconciliation audit trail</h4>
+        {auditEntries.length === 0 ? (
+          <p className="text-secondary text-sm" style={{ margin: "0 12px 12px" }}>No reconciliation runs or decisions recorded yet.</p>
+        ) : (
+          <table className="data-table" aria-label="Reconciliation audit trail">
+            <thead><tr><th>When</th><th>Type</th><th>Action</th><th>Actor</th><th>Details</th></tr></thead>
+            <tbody>
+              {auditEntries.map((a) => (
+                <tr key={a.id}>
+                  <td className="text-xs">{new Date(a.createdAt).toLocaleString()}</td>
+                  <td className="text-xs">{a.entityType === "reconciliation_run" ? "Run" : "Record"}</td>
+                  <td className="font-mono text-xs">{a.action}</td>
+                  <td className="text-xs">{a.actor}</td>
+                  <td className="text-xs text-break">{a.details}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       {/* Inspect & Resolve Modal */}
       {selectedRecord && (
@@ -311,10 +353,13 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
                 <select
                   id="resolve-action-select"
                   value={resolveAction}
-                  onChange={(e) => setResolveAction(e.target.value as "RESOLVE" | "DISMISS")}
+                  onChange={(e) => setResolveAction(e.target.value)}
                 >
-                  <option value="RESOLVE">RESOLVE (Record manual audit & verification)</option>
-                  <option value="DISMISS">DISMISS (Acknowledge and mark as expected exception)</option>
+                  {(CORRECTIVE_ACTIONS[selectedRecord.mismatchType] ?? []).map((a) => (
+                    <option key={a.value} value={a.value}>{a.label}</option>
+                  ))}
+                  <option value="RESOLVE">RESOLVE (mark resolved; no business state change)</option>
+                  <option value="DISMISS">DISMISS (acknowledge as expected exception)</option>
                 </select>
               </div>
 
@@ -349,15 +394,22 @@ export const ReconciliationView: React.FC<ReconciliationViewProps> = ({ onNotify
               </div>
             </form>
           ) : (
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setSelectedRecord(null)}
-              >
-                Close
-              </button>
-            </div>
+            <>
+              <h4 className="mt-3 mb-1">Resolution</h4>
+              <p className="text-sm">
+                <strong>{selectedRecord.resolutionAction ?? selectedRecord.status}</strong>
+                {selectedRecord.resolutionNotes ? ` — ${selectedRecord.resolutionNotes}` : ""}
+              </p>
+              <div className="modal-footer">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setSelectedRecord(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </>
           )}
         </Modal>
       )}

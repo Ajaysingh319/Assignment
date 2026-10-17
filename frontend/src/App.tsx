@@ -7,16 +7,20 @@ import { InventoryView } from "./views/InventoryView";
 import { PaymentsView } from "./views/PaymentsView";
 import { ReconciliationView } from "./views/ReconciliationView";
 import { FailedEventsView } from "./views/FailedEventsView";
+import { OrderRequestsView } from "./views/OrderRequestsView";
+import { EventPipelineView } from "./views/EventPipelineView";
 import { ToastContainer, type ToastMessage } from "./components/Toast";
 
 const NAV_ITEMS = [
   { id: "orders", label: "Orders", icon: "📦" },
+  { id: "requests", label: "Order Requests", icon: "📨" },
   { id: "products", label: "Products", icon: "🏷️" },
   { id: "warehouses", label: "Warehouses", icon: "🏭" },
   { id: "inventory", label: "Inventory", icon: "🏢" },
   { id: "payments", label: "Payments", icon: "💳" },
   { id: "reconciliation", label: "Reconciliation", icon: "⚖️" },
-  { id: "events", label: "Failed Events", icon: "⚠️" },
+  { id: "pipeline", label: "Event Pipeline", icon: "🔁" },
+  { id: "events", label: "Failed Events / DLT", icon: "⚠️" },
 ] as const;
 
 type SectionId = (typeof NAV_ITEMS)[number]["id"];
@@ -110,6 +114,8 @@ export default function App() {
           {section === "inventory" && <InventoryView onNotify={addToast} />}
           {section === "payments" && <PaymentsView onNotify={addToast} />}
           {section === "reconciliation" && <ReconciliationView onNotify={addToast} />}
+          {section === "requests" && <OrderRequestsView onNotify={addToast} />}
+          {section === "pipeline" && <EventPipelineView onNotify={addToast} />}
           {section === "events" && <FailedEventsView onNotify={addToast} />}
         </main>
       </div>

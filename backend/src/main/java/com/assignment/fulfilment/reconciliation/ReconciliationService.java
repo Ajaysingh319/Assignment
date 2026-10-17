@@ -6,6 +6,10 @@ import com.assignment.fulfilment.inventory.ReservationRepository;
 import com.assignment.fulfilment.inventory.domain.Reservation;
 import com.assignment.fulfilment.inventory.domain.ReservationStatus;
 import com.assignment.fulfilment.orders.OrderRepository;
+import com.assignment.fulfilment.orders.OrderService;
+import com.assignment.fulfilment.orders.dto.OrderResponse;
+import com.assignment.fulfilment.payments.PaymentService;
+import com.assignment.fulfilment.payments.dto.PaymentResponse;
 import com.assignment.fulfilment.orders.domain.Order;
 import com.assignment.fulfilment.orders.domain.OrderStatus;
 import com.assignment.fulfilment.payments.PaymentRepository;
@@ -42,6 +46,8 @@ public class ReconciliationService {
     private final ReservationRepository reservationRepository;
     private final ReconciliationRecordRepository reconciliationRecordRepository;
     private final AuditLogRepository auditLogRepository;
+    private final PaymentService paymentService;
+    private final OrderService orderService;
     private final int stalePendingMinutes;
 
     public ReconciliationService(
@@ -50,6 +56,8 @@ public class ReconciliationService {
             ReservationRepository reservationRepository,
             ReconciliationRecordRepository reconciliationRecordRepository,
             AuditLogRepository auditLogRepository,
+            PaymentService paymentService,
+            OrderService orderService,
             @Value("${app.reconciliation-stale-pending-minutes:60}") int stalePendingMinutes
     ) {
         this.orderRepository = orderRepository;
@@ -57,6 +65,8 @@ public class ReconciliationService {
         this.reservationRepository = reservationRepository;
         this.reconciliationRecordRepository = reconciliationRecordRepository;
         this.auditLogRepository = auditLogRepository;
+        this.paymentService = paymentService;
+        this.orderService = orderService;
         this.stalePendingMinutes = stalePendingMinutes;
     }
 
@@ -84,6 +94,15 @@ public class ReconciliationService {
             if (payment.getStatus() == PaymentStatus.SUCCEEDED) {
                 Order order = orderRepository.findById(payment.getOrderId()).orElse(null);
                 if (order != null && order.getStatus() == OrderStatus.CANCELLED) {
+                    // The payment flow records this incident inline when the late success arrives; do not
+                    // open a second record for the same payment.
+                    Optional<ReconciliationRecord> inline = reconciliationRecordRepository
+                            .findFirstByMismatchTypeAndPaymentId("PAYMENT_SUCCEEDED_ORDER_CANCELLED", payment.getId());
+                    if (inline.isPresent()) {
+                        existingCount++;
+                        resultRecords.add(inline.get());
+                        continue;
+                    }
                     String mismatchKey = "PAYMENT_SUCCEEDED_ORDER_CANCELLED:" + order.getId() + ":" + payment.getId();
                     String details = "{\"action\":\"REFUND_REVIEW_REQUIRED\",\"orderId\":\"" + order.getId()
                             + "\",\"paymentId\":\"" + payment.getId() + "\",\"amount\":" + payment.getAmount()
@@ -216,11 +235,76 @@ public class ReconciliationService {
             }
         }
 
-        log.info("Reconciliation run completed. detected={}, existing={}", detectedCount, existingCount);
+        // 5. Check: the same order was charged successfully more than once
+        for (Order order : allOrders) {
+            List<Payment> succeeded = paymentsByOrder.getOrDefault(order.getId(), List.of()).stream()
+                    .filter(p -> p.getStatus() == PaymentStatus.SUCCEEDED)
+                    .toList();
+            if (succeeded.size() > 1) {
+                String mismatchKey = "DUPLICATE_SUCCESSFUL_PAYMENT:" + order.getId();
+                String paymentIds = succeeded.stream().map(p -> "\"" + p.getId() + "\"").collect(Collectors.joining(","));
+                String details = "{\"action\":\"REFUND_DUPLICATE_CHARGE\",\"orderId\":\"" + order.getId()
+                        + "\",\"successfulPayments\":" + succeeded.size() + ",\"paymentIds\":[" + paymentIds
+                        + "],\"reason\":\"Order was charged successfully more than once; refund the extra payment(s).\"}";
+                // Reference the most recent charge: it is the one to refund
+                Payment latest = succeeded.stream().max(java.util.Comparator.comparing(Payment::getCreatedAt)).orElseThrow();
+                SaveResult res = saveOrUpdateMismatch(
+                        mismatchKey, order.getId(), latest.getId(),
+                        "DUPLICATE_SUCCESSFUL_PAYMENT", ReconciliationStatus.ACTION_REQUIRED, details
+                );
+                if (res.isNew()) detectedCount++; else existingCount++;
+                resultRecords.add(res.record());
+            }
+        }
+
+        // 6. Check: a successful payment does not match the order total or currency
+        Map<UUID, Order> ordersById = allOrders.stream().collect(Collectors.toMap(Order::getId, o -> o));
+        for (Payment payment : allPayments) {
+            if (payment.getStatus() != PaymentStatus.SUCCEEDED) {
+                continue;
+            }
+            Order order = ordersById.get(payment.getOrderId());
+            if (order == null) {
+                continue;
+            }
+            boolean amountDiffers = payment.getAmount().compareTo(order.getTotalAmount()) != 0;
+            boolean currencyDiffers = !payment.getCurrency().equalsIgnoreCase(order.getCurrency());
+            if (amountDiffers || currencyDiffers) {
+                String mismatchKey = "PAYMENT_AMOUNT_MISMATCH:" + payment.getId();
+                String details = "{\"action\":\"PAYMENT_AMOUNT_REVIEW_REQUIRED\",\"orderId\":\"" + order.getId()
+                        + "\",\"paymentId\":\"" + payment.getId()
+                        + "\",\"orderTotal\":" + order.getTotalAmount() + ",\"orderCurrency\":\"" + order.getCurrency()
+                        + "\",\"paidAmount\":" + payment.getAmount() + ",\"paidCurrency\":\"" + payment.getCurrency() + "\"}";
+                SaveResult res = saveOrUpdateMismatch(
+                        mismatchKey, order.getId(), payment.getId(),
+                        "PAYMENT_AMOUNT_MISMATCH", ReconciliationStatus.ACTION_REQUIRED, details
+                );
+                if (res.isNew()) detectedCount++; else existingCount++;
+                resultRecords.add(res.record());
+            }
+        }
+
+        UUID runId = UUID.randomUUID();
+        Instant runAt = Instant.now();
+        auditLogRepository.save(new AuditLog(
+                "reconciliation_run",
+                runId.toString(),
+                "RECONCILIATION_RUN",
+                "SYSTEM",
+                "ordersChecked=" + allOrders.size() + ", paymentsChecked=" + allPayments.size()
+                        + ", newMismatches=" + detectedCount + ", alreadyKnown=" + existingCount
+        ));
+
+        log.info("Reconciliation run {} completed. orders={}, payments={}, detected={}, existing={}",
+                runId, allOrders.size(), allPayments.size(), detectedCount, existingCount);
         return new ReconciliationRunResponse(
                 detectedCount,
                 existingCount,
-                resultRecords.stream().map(ReconciliationRecordResponse::from).toList()
+                resultRecords.stream().map(ReconciliationRecordResponse::from).toList(),
+                runId,
+                runAt,
+                allOrders.size(),
+                allPayments.size()
         );
     }
 
@@ -304,22 +388,63 @@ public class ReconciliationService {
             return ReconciliationRecordResponse.from(record);
         }
 
-        if ("DISMISS".equals(action)) {
-            record.dismiss();
-        } else {
-            record.resolve();
+        String notes = request != null && request.notes() != null && !request.notes().isBlank()
+                ? request.notes() : "Simulated action resolved";
+
+        // Corrective actions change real business state; each is validated against the record type
+        // and executed through the owning module so inventory and order invariants are preserved.
+        String effect;
+        switch (action) {
+            case "REFUND_PAYMENT" -> {
+                if (record.getPaymentId() == null) {
+                    throw new IllegalArgumentException("REFUND_PAYMENT requires a mismatch that references a payment");
+                }
+                if (!Set.of("PAYMENT_SUCCEEDED_ORDER_CANCELLED", "DUPLICATE_SUCCESSFUL_PAYMENT", "PAYMENT_AMOUNT_MISMATCH")
+                        .contains(record.getMismatchType())) {
+                    throw new IllegalArgumentException("REFUND_PAYMENT is not applicable to mismatch type " + record.getMismatchType());
+                }
+                PaymentResponse refunded = paymentService.refundPayment(record.getPaymentId(), "reconciliation " + record.getMismatchKey());
+                effect = "payment " + refunded.id() + " -> " + refunded.status();
+                record.resolve();
+            }
+            case "EXPIRE_ORDER" -> {
+                if (record.getOrderId() == null || !"STALE_PENDING_ORDER".equals(record.getMismatchType())) {
+                    throw new IllegalArgumentException("EXPIRE_ORDER is only applicable to STALE_PENDING_ORDER mismatches");
+                }
+                OrderResponse expired = orderService.expireOrder(record.getOrderId());
+                effect = "order " + expired.id() + " -> " + expired.status() + ", reservations released";
+                record.resolve();
+            }
+            case "DISMISS" -> {
+                effect = "no business state changed";
+                record.dismiss();
+            }
+            case "RESOLVE" -> {
+                effect = "marked resolved; no business state changed";
+                record.resolve();
+            }
+            default -> throw new IllegalArgumentException(
+                    "Unsupported action '" + action + "'. Use RESOLVE, DISMISS, REFUND_PAYMENT or EXPIRE_ORDER");
         }
+        record.recordResolution(action, notes + " [" + effect + "]");
         ReconciliationRecord saved = reconciliationRecordRepository.save(record);
 
-        String notes = request != null && request.notes() != null ? request.notes() : "Simulated action resolved";
         auditLogRepository.save(new AuditLog(
                 "reconciliation",
                 saved.getId().toString(),
                 "MISMATCH_" + saved.getStatus(),
                 "OPERATOR",
-                "Action=" + saved.getStatus() + ", notes=" + notes + ", mismatchKey=" + saved.getMismatchKey()
+                "Action=" + action + ", status=" + saved.getStatus() + ", effect=" + effect
+                        + ", notes=" + notes + ", mismatchKey=" + saved.getMismatchKey()
         ));
 
         return ReconciliationRecordResponse.from(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ReconciliationRecordResponse> recordsForOrder(UUID orderId) {
+        return reconciliationRecordRepository.findByOrderIdOrderByDetectedAtAsc(orderId).stream()
+                .map(ReconciliationRecordResponse::from)
+                .toList();
     }
 }

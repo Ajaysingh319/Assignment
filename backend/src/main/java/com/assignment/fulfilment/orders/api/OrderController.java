@@ -1,11 +1,14 @@
 package com.assignment.fulfilment.orders.api;
 
 import com.assignment.fulfilment.orders.OrderService;
+import com.assignment.fulfilment.orders.domain.OrderRequestOutcome;
 import com.assignment.fulfilment.orders.domain.OrderStatus;
 import com.assignment.fulfilment.orders.dto.CreateOrderRequest;
+import com.assignment.fulfilment.orders.dto.OrderRequestResponse;
 import com.assignment.fulfilment.orders.dto.OrderResponse;
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -42,6 +45,25 @@ public class OrderController {
             @RequestParam(name = "status", required = false) OrderStatus status
     ) {
         return ResponseEntity.ok(orderService.listOrders(status));
+    }
+
+    /**
+     * Operation history of order-creation requests, including rejected requests that never became orders.
+     */
+    @GetMapping("/requests")
+    public ResponseEntity<List<OrderRequestResponse>> listRequests(
+            @RequestParam(name = "outcome", required = false) OrderRequestOutcome outcome,
+            @RequestParam(name = "keyPrefix", required = false) String keyPrefix,
+            @RequestParam(name = "limit", defaultValue = "200") int limit
+    ) {
+        return ResponseEntity.ok(orderService.listRequests(outcome, keyPrefix, limit));
+    }
+
+    @GetMapping("/requests/summary")
+    public ResponseEntity<Map<String, Long>> requestSummary(
+            @RequestParam(name = "keyPrefix", required = false) String keyPrefix
+    ) {
+        return ResponseEntity.ok(orderService.requestOutcomeCounts(keyPrefix));
     }
 
     @GetMapping("/{orderId}")

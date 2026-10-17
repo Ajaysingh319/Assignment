@@ -47,6 +47,12 @@ public class ReconciliationRecord {
     @Column(name = "resolved_at")
     private Instant resolvedAt;
 
+    @Column(name = "resolution_action", length = 64)
+    private String resolutionAction;
+
+    @Column(name = "resolution_notes", columnDefinition = "TEXT")
+    private String resolutionNotes;
+
     protected ReconciliationRecord() {
     }
 
@@ -84,6 +90,19 @@ public class ReconciliationRecord {
         this.status = ReconciliationStatus.DISMISSED;
         this.resolvedAt = Instant.now();
         this.updatedAt = this.resolvedAt;
+    }
+
+    public void recordResolution(String action, String notes) {
+        this.resolutionAction = action;
+        this.resolutionNotes = notes;
+    }
+
+    public String getResolutionAction() {
+        return resolutionAction;
+    }
+
+    public String getResolutionNotes() {
+        return resolutionNotes;
     }
 
     public UUID getId() {

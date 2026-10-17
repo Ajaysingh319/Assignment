@@ -22,6 +22,16 @@ spring:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     properties:
       security.protocol: ${KAFKA_SECURITY_PROTOCOL:PLAINTEXT}
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:fulfilment-order-group}
+      auto-offset-reset: earliest
   jackson:
     time-zone: UTC
     serialization:
@@ -50,3 +60,13 @@ app:
   reconciliation-stale-pending-minutes: ${RECONCILIATION_STALE_PENDING_MINUTES:60}
   seed:
     enabled: ${APP_SEED_ENABLED:false}
+  order-expiry-check-interval-ms: ${ORDER_EXPIRY_CHECK_INTERVAL_MS:30000}
+  scheduling:
+    enabled: ${APP_SCHEDULING_ENABLED:true}
+  events:
+    outbox-poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:2000}
+    max-retries: ${EVENT_MAX_RETRIES:3}
+    retry-backoff-ms: ${EVENT_RETRY_BACKOFF_MS:2000}
+    publisher:
+      send-timeout-ms: 5000
+      simulate-without-kafka: false

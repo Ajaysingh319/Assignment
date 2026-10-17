@@ -3,19 +3,26 @@ package com.assignment.fulfilment.orders;
 import com.assignment.fulfilment.common.audit.AuditLog;
 import com.assignment.fulfilment.common.audit.AuditLogRepository;
 import com.assignment.fulfilment.common.exception.IdempotencyConflictException;
+import com.assignment.fulfilment.common.exception.InsufficientStockException;
 import com.assignment.fulfilment.common.exception.InvalidOrderStateTransitionException;
 import com.assignment.fulfilment.inventory.InventoryReservationService;
 import com.assignment.fulfilment.inventory.dto.ReservationItemResponse;
 import com.assignment.fulfilment.orders.domain.Order;
+import com.assignment.fulfilment.orders.domain.OrderRequestOutcome;
 import com.assignment.fulfilment.orders.domain.OrderStatus;
 import com.assignment.fulfilment.orders.dto.CreateOrderRequest;
 import com.assignment.fulfilment.orders.dto.OrderItemResponse;
+import com.assignment.fulfilment.orders.dto.OrderRequestResponse;
 import com.assignment.fulfilment.orders.dto.OrderResponse;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,19 +34,25 @@ public class OrderService {
     private final InventoryReservationService inventoryReservationService;
     private final AuditLogRepository auditLogRepository;
     private final com.assignment.fulfilment.events.publisher.OutboxService outboxService;
+    private final OrderRequestRecorder orderRequestRecorder;
+    private final OrderRequestRepository orderRequestRepository;
 
     public OrderService(
             OrderRepository orderRepository,
             OrderTransactionalWriter orderTransactionalWriter,
             InventoryReservationService inventoryReservationService,
             AuditLogRepository auditLogRepository,
-            com.assignment.fulfilment.events.publisher.OutboxService outboxService
+            com.assignment.fulfilment.events.publisher.OutboxService outboxService,
+            OrderRequestRecorder orderRequestRecorder,
+            OrderRequestRepository orderRequestRepository
     ) {
         this.orderRepository = orderRepository;
         this.orderTransactionalWriter = orderTransactionalWriter;
         this.inventoryReservationService = inventoryReservationService;
         this.auditLogRepository = auditLogRepository;
         this.outboxService = outboxService;
+        this.orderRequestRecorder = orderRequestRecorder;
+        this.orderRequestRepository = orderRequestRepository;
     }
 
     /**
@@ -62,14 +75,7 @@ public class OrderService {
         // Fast path: check if order with idempotency key already exists
         Optional<Order> existing = orderRepository.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
-            Order order = existing.get();
-            if (order.getRequestHash().equals(requestHash)) {
-                return toResponse(order);
-            }
-            throw new IdempotencyConflictException(
-                    idempotencyKey,
-                    "Idempotency key '" + idempotencyKey + "' was already used with a different request payload"
-            );
+            return replayOrConflict(existing.get(), idempotencyKey, requestHash, request);
         }
 
         try {
@@ -77,8 +83,62 @@ public class OrderService {
             return orderTransactionalWriter.createOrderInTransaction(orderId, idempotencyKey, requestHash, request);
         } catch (DataIntegrityViolationException dive) {
             // Unique constraint violation: concurrent request won the race. Resolve to winning order.
-            return resolveConcurrentIdempotency(idempotencyKey, requestHash, dive);
+            return resolveConcurrentIdempotency(idempotencyKey, requestHash, request, dive);
+        } catch (InsufficientStockException e) {
+            orderRequestRecorder.recordOutcome(idempotencyKey, OrderRequestOutcome.REJECTED_INSUFFICIENT_STOCK, null, e.getMessage(), request);
+            throw e;
+        } catch (NoSuchElementException | IllegalArgumentException e) {
+            orderRequestRecorder.recordOutcome(idempotencyKey, OrderRequestOutcome.REJECTED_INVALID, null, e.getMessage(), request);
+            throw e;
         }
+    }
+
+    private OrderResponse replayOrConflict(Order order, String idempotencyKey, String requestHash, CreateOrderRequest request) {
+        if (order.getRequestHash().equals(requestHash)) {
+            orderRequestRecorder.recordOutcome(idempotencyKey, OrderRequestOutcome.IDEMPOTENT_REPLAY, order.getId(),
+                    "Existing order returned; no new order or reservation created", request);
+            return toResponse(order);
+        }
+        String message = "Idempotency key '" + idempotencyKey + "' was already used with a different request payload";
+        orderRequestRecorder.recordOutcome(idempotencyKey, OrderRequestOutcome.REJECTED_IDEMPOTENCY_CONFLICT, order.getId(), message, request);
+        throw new IdempotencyConflictException(idempotencyKey, message);
+    }
+
+    @Transactional(readOnly = true)
+    public List<OrderRequestResponse> listRequests(OrderRequestOutcome outcome, String keyPrefix, int limit) {
+        int size = Math.max(1, Math.min(limit, 1000));
+        return orderRequestRepository.search(outcome, toLikePattern(keyPrefix), PageRequest.of(0, size)).stream()
+                .map(OrderRequestResponse::from)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Long> requestOutcomeCounts(String keyPrefix) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (OrderRequestOutcome outcome : OrderRequestOutcome.values()) {
+            counts.put(outcome.name(), 0L);
+        }
+        long total = 0;
+        for (Object[] row : orderRequestRepository.countByOutcome(toLikePattern(keyPrefix))) {
+            long count = ((Number) row[1]).longValue();
+            counts.put(((OrderRequestOutcome) row[0]).name(), count);
+            total += count;
+        }
+        counts.put("TOTAL", total);
+        return counts;
+    }
+
+    private static String toLikePattern(String keyPrefix) {
+        if (keyPrefix == null || keyPrefix.isBlank()) {
+            return null;
+        }
+        String escaped = keyPrefix.trim().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+        return escaped + "%";
+    }
+
+    @Transactional(readOnly = true)
+    public List<UUID> findExpirableOrderIds(Instant createdBefore) {
+        return orderRepository.findIdsByStatusAndCreatedAtBefore(OrderStatus.PENDING_PAYMENT, createdBefore);
     }
 
     @Transactional(readOnly = true)
@@ -255,19 +315,13 @@ public class OrderService {
     private OrderResponse resolveConcurrentIdempotency(
             String idempotencyKey,
             String requestHash,
+            CreateOrderRequest request,
             DataIntegrityViolationException originalException
     ) {
         for (int i = 0; i < 5; i++) {
             Optional<Order> existing = orderRepository.findByIdempotencyKey(idempotencyKey);
             if (existing.isPresent()) {
-                Order order = existing.get();
-                if (order.getRequestHash().equals(requestHash)) {
-                    return toResponse(order);
-                }
-                throw new IdempotencyConflictException(
-                        idempotencyKey,
-                        "Idempotency key '" + idempotencyKey + "' was already used with a different request payload"
-                );
+                return replayOrConflict(existing.get(), idempotencyKey, requestHash, request);
             }
             try {
                 Thread.sleep(50);

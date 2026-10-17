@@ -31,7 +31,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,6 +67,8 @@ import org.springframework.test.context.ActiveProfiles;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("postgres-test")
+@EnabledIfEnvironmentVariable(named = "DATABASE_PASSWORD", matches = ".+",
+        disabledReason = "Requires a live PostgreSQL instance; set DATABASE_PASSWORD to run")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 public class PostgresOrderConcurrencyIntegrationTest {
 
@@ -77,6 +81,9 @@ public class PostgresOrderConcurrencyIntegrationTest {
 
     @Autowired
     private CatalogService catalogService;
+
+    @Autowired
+    private OrderService orderService;
 
     @Autowired
     private InventoryService inventoryService;
@@ -403,6 +410,17 @@ public class PostgresOrderConcurrencyIntegrationTest {
                 pass = false;
                 assertionFailures.add("Found ghost order for rejected idempotency key: " + failedKey);
             }
+        }
+
+        // Every request outcome is persisted in order_requests: 10 ACCEPTED, 90 REJECTED_INSUFFICIENT_STOCK
+        Map<String, Long> outcomes = orderService.requestOutcomeCounts("conc-order-" + runId + "-");
+        if (outcomes.get("ACCEPTED") != 10L) {
+            pass = false;
+            assertionFailures.add("Expected 10 ACCEPTED order_requests rows, but got: " + outcomes.get("ACCEPTED"));
+        }
+        if (outcomes.get("REJECTED_INSUFFICIENT_STOCK") != 90L) {
+            pass = false;
+            assertionFailures.add("Expected 90 REJECTED_INSUFFICIENT_STOCK order_requests rows, but got: " + outcomes.get("REJECTED_INSUFFICIENT_STOCK"));
         }
 
         // 9. Print concise test report

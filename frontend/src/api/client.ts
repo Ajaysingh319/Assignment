@@ -1,4 +1,11 @@
 import type {
+  AuditEntry,
+  EventPipelineSummary,
+  OrderDetails,
+  OrderRequestOutcome,
+  OrderRequestRecord,
+  OrderRequestSummary,
+  OutboxEventRecord,
   EventFailure,
   EventFailureStatus,
   EventFailureSummary,
@@ -264,4 +271,52 @@ export const api = {
 
   publishOutbox: () =>
     request<{ publishedCount: number }>("/api/events/outbox/publish", { method: "POST" }),
+
+  // Order detail, request history, events pipeline, audit
+  getOrderDetails: (id: string) =>
+    request<OrderDetails>(`/api/orders/${encodeURIComponent(id)}/details`),
+
+  expireOrder: (id: string) =>
+    request<Order>(`/api/orders/${encodeURIComponent(id)}/expire`, { method: "POST" }),
+
+  getOrderRequests: (params: { outcome?: OrderRequestOutcome; keyPrefix?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.outcome) q.set("outcome", params.outcome);
+    if (params.keyPrefix) q.set("keyPrefix", params.keyPrefix);
+    q.set("limit", String(params.limit ?? 300));
+    return request<OrderRequestRecord[]>(`/api/orders/requests?${q.toString()}`);
+  },
+
+  getOrderRequestSummary: (keyPrefix?: string) =>
+    request<OrderRequestSummary>(
+      `/api/orders/requests/summary${keyPrefix ? `?keyPrefix=${encodeURIComponent(keyPrefix)}` : ""}`
+    ),
+
+  getOutboxEvents: (status?: "PENDING" | "PUBLISHED") =>
+    request<OutboxEventRecord[]>(`/api/events/outbox${status ? `?status=${status}` : ""}`),
+
+  redeliverEvent: (eventId: string) =>
+    request<OutboxEventRecord>(`/api/events/outbox/${encodeURIComponent(eventId)}/redeliver`, { method: "POST" }),
+
+  getEventPipelineSummary: () =>
+    request<EventPipelineSummary>("/api/events/summary"),
+
+  setFaultInjection: (failures: number, eventType?: string, aggregateId?: string) =>
+    request<{ remainingFailures: number; eventType?: string | null; aggregateId?: string | null }>(
+      "/api/events/fault-injection",
+      { method: "POST", body: JSON.stringify({ failures, eventType: eventType || null, aggregateId: aggregateId || null }) }
+    ),
+
+  getAudit: (entityType?: string, limit = 100) => {
+    const q = new URLSearchParams();
+    if (entityType) q.set("entityType", entityType);
+    q.set("limit", String(limit));
+    return request<AuditEntry[]>(`/api/audit?${q.toString()}`);
+  },
+
+  resolveReconciliationWithAction: (id: string, action: string, notes?: string) =>
+    request<ReconciliationRecord>(`/api/reconciliation/records/${encodeURIComponent(id)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ action, notes }),
+    }),
 };

@@ -3,6 +3,11 @@ package com.assignment.fulfilment.events.api;
 import com.assignment.fulfilment.events.EventService;
 import com.assignment.fulfilment.events.domain.EventFailureStatus;
 import com.assignment.fulfilment.events.dto.EventFailureResponse;
+import com.assignment.fulfilment.events.dto.EventPipelineSummaryResponse;
+import com.assignment.fulfilment.events.dto.FaultInjectionRequest;
+import com.assignment.fulfilment.events.dto.OutboxEventResponse;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.RequestBody;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -60,5 +65,32 @@ public class EventController {
     public ResponseEntity<Map<String, Integer>> triggerPublish() {
         int published = eventService.triggerOutboxPublish();
         return ResponseEntity.ok(Map.of("publishedCount", published));
+    }
+
+    @GetMapping("/outbox")
+    public ResponseEntity<List<OutboxEventResponse>> listOutbox(
+            @RequestParam(name = "status", required = false) String status
+    ) {
+        return ResponseEntity.ok(eventService.listOutboxEvents(status));
+    }
+
+    @PostMapping("/outbox/{eventId}/redeliver")
+    public ResponseEntity<OutboxEventResponse> redeliver(@PathVariable("eventId") UUID eventId) {
+        return ResponseEntity.ok(eventService.redeliverEvent(eventId));
+    }
+
+    @GetMapping("/summary")
+    public ResponseEntity<EventPipelineSummaryResponse> pipelineSummary() {
+        return ResponseEntity.ok(eventService.getPipelineSummary());
+    }
+
+    @GetMapping("/fault-injection")
+    public ResponseEntity<Map<String, Object>> faultInjection() {
+        return ResponseEntity.ok(eventService.faultInjectionState());
+    }
+
+    @PostMapping("/fault-injection")
+    public ResponseEntity<Map<String, Object>> armFaultInjection(@Valid @RequestBody FaultInjectionRequest request) {
+        return ResponseEntity.ok(eventService.armFaultInjection(request));
     }
 }

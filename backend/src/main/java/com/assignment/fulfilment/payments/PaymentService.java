@@ -85,10 +85,37 @@ public class PaymentService {
             throw new IllegalArgumentException("Invalid payment outcome: " + request.outcome());
         }
 
+        if (outcomeStatus == PaymentStatus.PENDING || outcomeStatus == PaymentStatus.REFUNDED) {
+            throw new IllegalArgumentException("Invalid payment outcome: " + request.outcome());
+        }
+
         Payment payment = new Payment(orderId, providerReference, outcomeStatus, amount, currency);
         Payment saved = paymentRepository.save(payment);
 
+        if (outcomeStatus == PaymentStatus.SUCCEEDED || outcomeStatus == PaymentStatus.FAILED) {
+            // The simulated provider answers synchronously; persist that answer as a provider callback so the
+            // webhook audit trail is complete. A TIMED_OUT attempt has no provider answer yet, by definition.
+            String callbackId = "sim_cb_" + UUID.randomUUID().toString().substring(0, 18);
+            paymentCallbackRepository.save(new PaymentCallback(
+                    callbackId,
+                    saved.getId(),
+                    "source=SIMULATOR, result=" + outcomeStatus + ", providerReference=" + providerReference
+                            + ", amount=" + amount + " " + currency,
+                    outcomeStatus.name()
+            ));
+            saved.recordCallbackId(callbackId);
+            paymentRepository.save(saved);
+        }
+
         if (outcomeStatus == PaymentStatus.SUCCEEDED) {
+            auditLogRepository.save(new AuditLog(
+                    "payment",
+                    saved.getId().toString(),
+                    "PAYMENT_SUCCEEDED",
+                    "SYSTEM",
+                    "Simulated success for order=" + orderId + ", amount=" + amount + " " + currency
+                            + ", orderStatusBefore=" + order.getStatus()
+            ));
             handlePaymentSucceeded(order, saved);
         } else if (outcomeStatus == PaymentStatus.FAILED) {
             log.info("Payment {} simulated as FAILED for order {}", saved.getId(), orderId);
@@ -136,8 +163,14 @@ public class PaymentService {
         }
         UUID resolvedId = request.paymentId();
         if (resolvedId == null && request.orderId() != null) {
-            resolvedId = paymentRepository.findByOrderId(request.orderId()).stream()
+            // Prefer the most recent payment still awaiting a provider answer, else the most recent payment
+            List<Payment> candidates = paymentRepository.findByOrderId(request.orderId()).stream()
+                    .sorted(java.util.Comparator.comparing(Payment::getCreatedAt).reversed())
+                    .toList();
+            resolvedId = candidates.stream()
+                    .filter(p -> !p.isFinal())
                     .findFirst()
+                    .or(() -> candidates.stream().findFirst())
                     .map(Payment::getId)
                     .orElse(null);
         }
@@ -146,17 +179,26 @@ public class PaymentService {
         }
         final UUID targetPaymentId = resolvedId;
 
-        // Fast check: duplicate callback ID deduplication
-        if (paymentCallbackRepository.existsByProviderCallbackId(request.callbackId())) {
-            log.info("Duplicate callback ID {} detected. Skipping duplicate callback processing.", request.callbackId());
-            Payment payment = paymentRepository.findById(targetPaymentId)
-                    .orElseThrow(() -> new NoSuchElementException("Payment not found: " + targetPaymentId));
-            return PaymentResponse.from(payment);
-        }
-
-        // Lock payment and associated order to prevent race conditions
+        // Lock the payment first: callbacks for the same payment are serialized, so the duplicate check
+        // below cannot race with a concurrent delivery of the same callback.
         Payment payment = paymentRepository.findByIdForUpdate(targetPaymentId)
                 .orElseThrow(() -> new NoSuchElementException("Payment not found: " + targetPaymentId));
+
+        // Duplicate callback ID deduplication: no state change, no new callback row, but audited
+        Optional<PaymentCallback> previous = paymentCallbackRepository.findByProviderCallbackId(request.callbackId());
+        if (previous.isPresent()) {
+            log.info("Duplicate callback ID {} detected for payment {}. Skipping duplicate callback processing.",
+                    request.callbackId(), payment.getId());
+            auditLogRepository.save(new AuditLog(
+                    "payment",
+                    payment.getId().toString(),
+                    "PAYMENT_CALLBACK_DUPLICATE_IGNORED",
+                    "PROVIDER",
+                    "callbackId=" + request.callbackId() + ", result=" + request.result()
+                            + ", firstReceivedAt=" + previous.get().getReceivedAt() + ", paymentStatus=" + payment.getStatus()
+            ));
+            return PaymentResponse.from(payment);
+        }
 
         Order order = orderRepository.findByIdForUpdate(payment.getOrderId())
                 .orElseThrow(() -> new NoSuchElementException("Order not found: " + payment.getOrderId()));
@@ -169,25 +211,40 @@ public class PaymentService {
         );
         paymentCallbackRepository.save(callback);
 
+        PaymentStatus before = payment.getStatus();
         String result = request.result().trim().toUpperCase();
+        boolean applied = false;
         if ("SUCCEEDED".equals(result)) {
             // A late callback can refine a timed-out or pending payment to SUCCEEDED
             if (payment.getStatus() == PaymentStatus.PENDING || payment.getStatus() == PaymentStatus.TIMED_OUT) {
                 payment.markSucceeded(request.callbackId());
                 paymentRepository.save(payment);
                 handlePaymentSucceeded(order, payment);
+                applied = true;
             }
         } else if ("FAILED".equals(result)) {
             if (payment.getStatus() == PaymentStatus.PENDING || payment.getStatus() == PaymentStatus.TIMED_OUT) {
                 payment.markFailed(request.callbackId());
                 paymentRepository.save(payment);
+                applied = true;
             }
         } else if ("TIMED_OUT".equals(result)) {
             if (payment.getStatus() == PaymentStatus.PENDING) {
                 payment.markTimedOut();
                 paymentRepository.save(payment);
+                applied = true;
             }
         }
+
+        auditLogRepository.save(new AuditLog(
+                "payment",
+                payment.getId().toString(),
+                applied ? "PAYMENT_CALLBACK_APPLIED" : "PAYMENT_CALLBACK_IGNORED",
+                "PROVIDER",
+                "callbackId=" + request.callbackId() + ", result=" + result + ", paymentStatus " + before + " -> " + payment.getStatus()
+                        + (applied ? "" : " (payment already final; callback recorded but not applied)")
+                        + ", orderStatus=" + order.getStatus()
+        ));
 
         outboxService.publish(
                 "PAYMENT",
@@ -252,6 +309,38 @@ public class PaymentService {
                 ));
             }
         }
+    }
+
+    /**
+     * Simulated refund used as a reconciliation corrective action. Only SUCCEEDED payments can be refunded;
+     * repeated calls on an already refunded payment are a no-op.
+     */
+    @Transactional
+    public PaymentResponse refundPayment(UUID paymentId, String reason) {
+        Payment payment = paymentRepository.findByIdForUpdate(paymentId)
+                .orElseThrow(() -> new NoSuchElementException("Payment not found: " + paymentId));
+        if (payment.getStatus() == PaymentStatus.REFUNDED) {
+            return PaymentResponse.from(payment);
+        }
+        payment.markRefunded();
+        paymentRepository.save(payment);
+        auditLogRepository.save(new AuditLog(
+                "payment",
+                payment.getId().toString(),
+                "PAYMENT_REFUNDED",
+                "OPERATOR",
+                "Simulated refund of " + payment.getAmount() + " " + payment.getCurrency() + " for order=" + payment.getOrderId()
+                        + (reason != null ? ", reason=" + reason : "")
+        ));
+        outboxService.publish(
+                "PAYMENT",
+                payment.getId().toString(),
+                "PAYMENT_REFUNDED",
+                1,
+                "{\"paymentId\":\"" + payment.getId() + "\",\"orderId\":\"" + payment.getOrderId() + "\",\"status\":\"REFUNDED\",\"amount\":" + payment.getAmount() + "}",
+                null
+        );
+        return PaymentResponse.from(payment);
     }
 
     @Transactional(readOnly = true)

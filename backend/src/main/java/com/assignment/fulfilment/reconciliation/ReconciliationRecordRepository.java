@@ -14,4 +14,8 @@ public interface ReconciliationRecordRepository extends JpaRepository<Reconcilia
     List<ReconciliationRecord> findAllByOrderByDetectedAtDesc();
 
     List<ReconciliationRecord> findByStatusOrderByDetectedAtDesc(ReconciliationStatus status);
+
+    Optional<ReconciliationRecord> findFirstByMismatchTypeAndPaymentId(String mismatchType, UUID paymentId);
+
+    List<ReconciliationRecord> findByOrderIdOrderByDetectedAtAsc(UUID orderId);
 }

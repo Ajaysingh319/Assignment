@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Testing and Documentation - Order Fulfilment and Reconciliation Platform</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 18mm 16mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10pt; line-height: 1.5; color: #1b2330; margin: 0; }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: #0f2b52; }
+  h2 { font-size: 14pt; color: #0f2b52; border-bottom: 2px solid #2f6fdb; padding-bottom: 3px; margin: 26px 0 10px; break-after: avoid; }
+  h3 { font-size: 11pt; color: #1d4a8f; margin: 16px 0 6px; break-after: avoid; }
+  p { margin: 6px 0; }
+  .sub { color: #5a6678; margin-bottom: 14px; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 9pt; break-inside: auto; }
+  th { background: #0f2b52; color: #fff; text-align: left; padding: 5px 7px; font-weight: 600; }
+  td { border: 1px solid #d3dae6; padding: 4px 7px; vertical-align: top; }
+  tr { break-inside: avoid; }
+  tr:nth-child(even) td { background: #f5f8fc; }
+  code, pre { font-family: Consolas, "Courier New", monospace; }
+  code { background: #eef2f8; padding: 0 3px; border-radius: 3px; font-size: 8.8pt; }
+  pre { background: #f2f5fa; border: 1px solid #d3dae6; border-left: 3px solid #2f6fdb; padding: 8px 10px; font-size: 8.3pt; line-height: 1.4; white-space: pre-wrap; word-break: break-word; break-inside: avoid; margin: 8px 0; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }
+  .stat { border: 1px solid #d3dae6; border-radius: 6px; padding: 8px; text-align: center; }
+  .stat b { display: block; font-size: 16pt; color: #1d4a8f; }
+  .stat span { font-size: 8pt; color: #5a6678; }
+  .box { background: #eef5ff; border: 1px solid #b9d0f5; border-radius: 6px; padding: 8px 12px; margin: 10px 0; break-inside: avoid; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 10px 0; font-size: 8.8pt; }
+  .flow div { background: #0f2b52; color: #fff; padding: 5px 8px; border-radius: 5px; }
+  .flow i { font-style: normal; color: #2f6fdb; font-weight: bold; }
+  .pass { color: #187a3b; font-weight: 600; }
+  ul { margin: 4px 0 8px 18px; padding: 0; }
+  li { margin: 2px 0; }
+  .cover { padding: 6px 0 14px; border-bottom: 1px solid #d3dae6; margin-bottom: 8px; }
+  .foot { color: #7a8597; font-size: 8pt; margin-top: 24px; border-top: 1px solid #d3dae6; padding-top: 6px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Testing and Documentation</h1>
+  <div class="sub">Distributed Order Fulfilment and Reconciliation Platform &middot; Spring Boot 3.4 (Java 17) &middot; React + Vite &middot; PostgreSQL &middot; Apache Kafka</div>
+</div>
+
+<h2>1. Automated tests</h2>
+<p>Run result with PostgreSQL and Kafka available: <b class="pass">93 tests, 0 failures, 0 errors, 0 skipped</b>. Without a database password, the PostgreSQL/Kafka tests are reported as skipped, never as passed.</p>
+
+<div class="grid">
+  <div class="stat"><b>93</b><span>tests run</span></div>
+  <div class="stat"><b>0</b><span>failures / errors</span></div>
+  <div class="stat"><b>0</b><span>skipped (with live services)</span></div>
+  <div class="stat"><b>27</b><span>test classes</span></div>
+</div>
+
+<h3>1.1 Required scenarios and the tests that cover them</h3>
+<table>
+  <tr><th style="width:24%">Scenario</th><th>What is proven</th><th style="width:34%">Tests</th></tr>
+  <tr><td><b>Concurrent inventory reservations</b></td>
+      <td>100 competing requests against 10 units give exactly 10 successes and 90 rejections; stock never negative; no orphan reservations; every request outcome is recorded. Also verified on real PostgreSQL through the HTTP order API.</td>
+      <td><code>InventoryReservationEngineTest</code> (H2)<br><code>PostgresInventoryConcurrencyIntegrationTest</code><br><code>PostgresOrderConcurrencyIntegrationTest</code></td></tr>
+  <tr><td><b>Duplicate events</b></td>
+      <td>A redelivered event is detected through <code>processed_events</code>, its business effect is applied once, and the duplicate is audited. Duplicate delivery through real Kafka is absorbed.</td>
+      <td><code>ConsumerRetryAndDeadLetterTest</code><br><code>EventProcessingTest</code><br><code>FailedEventWorkflowTest</code></td></tr>
+  <tr><td><b>Retries and dead-letter</b></td>
+      <td>A transient failure is redelivered and recovers; a persistent failure is dead-lettered after 3 attempts and stays unprocessed; an unparseable message is dead-lettered immediately.</td>
+      <td><code>ConsumerRetryAndDeadLetterTest</code><br><code>KafkaAutomaticPipelineIntegrationTest</code> (real Kafka)</td></tr>
+  <tr><td><b>Payment failures and duplicate callbacks</b></td>
+      <td>FAILED leaves the order pending; TIMED_OUT is refined by a late callback; a duplicate callback id changes nothing and is audited; a late success on a cancelled order does not resurrect it.</td>
+      <td><code>PaymentProcessingTest</code><br><code>PaymentApiTest</code><br><code>PaymentReconciliationFlowTest</code></td></tr>
+  <tr><td><b>Order cancellation and release</b></td>
+      <td>Cancelling (also twice) releases each reservation exactly once, for single and multi-product orders; automatic expiry releases stock too.</td>
+      <td><code>OrderRequestOutcomeTest</code><br><code>OrderLifecycleTest</code><br><code>OrderApiTest</code></td></tr>
+  <tr><td><b>All-or-nothing multi-product order</b></td>
+      <td>One short line rejects the whole order and reserves nothing.</td>
+      <td><code>OrderRequestOutcomeTest</code></td></tr>
+  <tr><td><b>Outbox publication</b></td>
+      <td>Without Kafka, events stay pending; a failed send records attempt and error; an acknowledged send is stamped <code>KAFKA</code>; the scheduler publishes with no manual call.</td>
+      <td><code>OutboxPublisherUnitTest</code><br><code>KafkaAutomaticPipelineIntegrationTest</code><br><code>KafkaOutboxEndToEndIntegrationTest</code></td></tr>
+  <tr><td><b>Reconciliation</b></td>
+      <td>Detects payment on cancelled order, missing payment, reservation inconsistency, stale items, double charge, wrong amount; re-runs do not duplicate records; corrective actions are audited.</td>
+      <td><code>ReconciliationTest</code><br><code>ReconciliationApiTest</code><br><code>PaymentReconciliationFlowTest</code></td></tr>
+</table>
+
+<h3>1.2 Running the tests</h3>
+<pre># Hermetic suite (H2, no external services)
+cd backend
+mvn test
+
+# Full suite including PostgreSQL and Kafka tests (prompts for the DB password)
+powershell -ExecutionPolicy Bypass -File .\scripts\run-integration-tests.ps1
+
+# One class
+powershell -ExecutionPolicy Bypass -File .\scripts\run-integration-tests.ps1 -Test PostgresOrderConcurrencyIntegrationTest
+
+# Service-level reservation stress test with configurable size
+mvn "-Dtest=PostgresInventoryConcurrencyIntegrationTest#testConcurrentReservationsAgainstLimitedStockOnPostgres" "-Ddemo.stock=10" "-Ddemo.requests=50" test</pre>
+
+<h3>1.3 Demonstrations against the running application</h3>
+<pre>node scripts\concurrency-demo.mjs        # 50 concurrent POST /api/orders vs 10 units
+node scripts\e2e-demo.mjs                # full workflow, 16 checks</pre>
+<p>Recorded result of the concurrency demo: <b>10 orders created (HTTP 201), 40 rejected for insufficient stock (HTTP 409), 0 available / 10 reserved, 5 retried idempotency keys returned their original orders, no negative stock</b>. The end-to-end script passed all 16 checks (automatic Kafka publish and consume, payment failure and success, duplicate callbacks, fulfilment, cancellation release, late payment reconciliation and refund, retry recovery, dead-lettering, duplicate event delivery).</p>
+
+<h2>2. Architecture and service boundaries</h2>
+<p>A modular monolith. PostgreSQL is the source of truth; Kafka carries asynchronous order and payment events. Each module owns its tables and exposes services to the others; the dashboard module only reads.</p>
+
+<div class="flow">
+  <div>React dashboard :5173</div><i>&rarr;</i><div>REST API :8080</div><i>&rarr;</i><div>Module service</div><i>&rarr;</i><div>PostgreSQL (state + outbox, one transaction)</div><i>&rarr;</i><div>Outbox publisher (every 2 s)</div><i>&rarr;</i><div>Kafka topic</div><i>&rarr;</i><div>Idempotent consumer</div>
+</div>
+
+<table>
+  <tr><th style="width:17%">Module</th><th>Responsibility</th><th style="width:30%">Owns tables</th></tr>
+  <tr><td><code>catalog</code></td><td>Products and warehouses.</td><td>products, warehouses</td></tr>
+  <tr><td><code>inventory</code></td><td>Stock per product and warehouse (available, reserved, fulfilled); reserve, release, fulfil.</td><td>inventory, reservations</td></tr>
+  <tr><td><code>orders</code></td><td>Idempotent order creation, lifecycle, request-outcome history, automatic expiry.</td><td>orders, order_items, order_requests</td></tr>
+  <tr><td><code>payments</code></td><td>Simulated payments (succeeded, failed, timed out), callbacks with deduplication, simulated refunds.</td><td>payments, payment_callbacks</td></tr>
+  <tr><td><code>events</code></td><td>Transactional outbox, Kafka publisher, idempotent consumer, retries, dead-letter, failure simulation.</td><td>outbox_events, processed_events, event_failures</td></tr>
+  <tr><td><code>reconciliation</code></td><td>Compares payments with orders and reservations; mismatch records and corrective actions.</td><td>reconciliation_records</td></tr>
+  <tr><td><code>dashboard</code></td><td>Read-only order details and audit endpoints for the UI.</td><td>(reads only)</td></tr>
+  <tr><td><code>common</code></td><td>Audit log, error mapping, correlation ids, scheduling.</td><td>audit_log</td></tr>
+</table>
+
+<h3>Key guarantees</h3>
+<table>
+  <tr><th style="width:26%">Concern</th><th>Mechanism</th></tr>
+  <tr><td>No overselling</td><td>Rows locked in deterministic order, plus conditional update <code>WHERE available_qty &gt;= :qty</code>, plus a database check constraint.</td></tr>
+  <tr><td>No partial multi-product reservation</td><td>All lines reserved in one transaction; any shortfall rolls everything back.</td></tr>
+  <tr><td>No duplicate orders</td><td><code>Idempotency-Key</code> header with a unique constraint: same payload returns the original order, a different payload returns 409.</td></tr>
+  <tr><td>No lost events</td><td>Outbox row is written in the same transaction as the business change and marked published only after Kafka acknowledges.</td></tr>
+  <tr><td>No duplicate effects</td><td>Consumer effect and the <code>processed_events</code> marker commit together.</td></tr>
+  <tr><td>Bounded retries</td><td>Failures recorded with attempts, error and timestamps; redelivered after 2 s; dead-lettered after 3 attempts.</td></tr>
+  <tr><td>Consistent lifecycle</td><td>Transitions guarded under row locks; a cancelled order can never be confirmed or fulfilled by a late event or payment.</td></tr>
+</table>
+
+<h3>Order lifecycle</h3>
+<pre>PENDING_PAYMENT --payment succeeded / confirm--> CONFIRMED --fulfil--> FULFILLED
+       |
+       +--cancel--------------------> CANCELLED   (reservations released)
+       +--expire (30 min, automatic)-> CANCELLED   (reservations released)</pre>
+<div class="box"><b>Rejected purchase attempts.</b> A request rejected for insufficient stock does not become an order. Every request outcome (accepted, rejected, replay, key conflict) is stored in <code>order_requests</code> and shown on the Order Requests page, so 50 attempts against 10 units appear as 10 orders and 50 recorded requests.</div>
+
+<h2>3. Database schema</h2>
+<p>Managed by Flyway migrations V1 to V7 in <code>backend/src/main/resources/db/migration</code>.</p>
+<table>
+  <tr><th style="width:22%">Table</th><th>Key columns and constraints</th></tr>
+  <tr><td>products</td><td>id, sku (unique), name, description, active, timestamps</td></tr>
+  <tr><td>warehouses</td><td>id, code (unique), name, location, active, timestamps</td></tr>
+  <tr><td>inventory</td><td>PK (product_id, warehouse_id); available_qty, reserved_qty, fulfilled_qty, each with CHECK &gt;= 0; version</td></tr>
+  <tr><td>reservations</td><td>id, order_id, product_id, warehouse_id, quantity (&gt; 0), status RESERVED / CONFIRMED / RELEASED / FULFILLED, released_at, fulfilled_at</td></tr>
+  <tr><td>orders</td><td>id, status, idempotency_key (unique), request_hash, currency, total_amount, confirmed_at, cancelled_at, fulfilled_at</td></tr>
+  <tr><td>order_items</td><td>id, order_id, product_id, quantity (&gt; 0), unit_price, line_total</td></tr>
+  <tr><td>order_requests</td><td>id, idempotency_key, outcome, order_id (nullable), reason, item_count, total_quantity, created_at</td></tr>
+  <tr><td>payments</td><td>id, order_id, provider_reference (unique), status, amount, currency, last_callback_id, succeeded_at</td></tr>
+  <tr><td>payment_callbacks</td><td>id, provider_callback_id (unique), payment_id, result, received_payload, received_at</td></tr>
+  <tr><td>outbox_events</td><td>id, aggregate_type, aggregate_id, event_type, payload, created_at, published_at, published_via (KAFKA / SIMULATED), attempt_count, last_error</td></tr>
+  <tr><td>processed_events</td><td>PK (consumer_name, event_id), processed_at</td></tr>
+  <tr><td>event_failures</td><td>id, event_id, topic, partition, offset, consumer_name, attempt_count, last_error, status RETRYING / DEAD_LETTERED / REPLAYED / RESOLVED, payload</td></tr>
+  <tr><td>reconciliation_records</td><td>id, mismatch_key (unique), order_id, payment_id, mismatch_type, status, details, resolution_action, resolution_notes</td></tr>
+  <tr><td>audit_log</td><td>id, entity_type, entity_id, action, actor, details, created_at</td></tr>
+</table>
+
+<h2>4. API reference</h2>
+<p>Base URL <code>http://localhost:8080</code>. Errors return <code>{timestamp, status, error, message, path, correlationId, details}</code>.</p>
+<table>
+  <tr><th style="width:8%">Method</th><th style="width:37%">Path</th><th>Purpose</th></tr>
+  <tr><td>POST</td><td>/api/products, /api/warehouses</td><td>Create catalog records</td></tr>
+  <tr><td>POST</td><td>/api/inventory/initialize</td><td>Create stock row with initial quantity</td></tr>
+  <tr><td>POST</td><td>/api/inventory/adjustments</td><td>Add or remove available stock</td></tr>
+  <tr><td>GET</td><td>/api/inventory</td><td>Available, reserved, fulfilled per product and warehouse</td></tr>
+  <tr><td>POST</td><td>/api/orders</td><td>Create order (requires <code>Idempotency-Key</code>); 201, or 409 on insufficient stock</td></tr>
+  <tr><td>GET</td><td>/api/orders?status=</td><td>List orders</td></tr>
+  <tr><td>GET</td><td>/api/orders/{id}/details</td><td>Products, reservations, history, payments, callbacks, events, reconciliation, audit</td></tr>
+  <tr><td>POST</td><td>/api/orders/{id}/cancel | confirm | fulfil | expire</td><td>Lifecycle transitions</td></tr>
+  <tr><td>GET</td><td>/api/orders/requests, /requests/summary</td><td>Request outcome history and counts (filter <code>keyPrefix</code>, <code>outcome</code>)</td></tr>
+  <tr><td>POST</td><td>/api/orders/{id}/payments/simulate</td><td>Outcome SUCCEEDED, FAILED or TIMED_OUT</td></tr>
+  <tr><td>POST</td><td>/api/payments/callbacks</td><td>Provider callback, deduplicated by <code>callbackId</code></td></tr>
+  <tr><td>GET</td><td>/api/payments, /api/payments/callbacks</td><td>Payment attempts and callback audit</td></tr>
+  <tr><td>POST</td><td>/api/reconciliation/run</td><td>Run reconciliation</td></tr>
+  <tr><td>GET</td><td>/api/reconciliation/records</td><td>Mismatch records</td></tr>
+  <tr><td>POST</td><td>/api/reconciliation/records/{id}/resolve</td><td>Action REFUND_PAYMENT, EXPIRE_ORDER, RESOLVE or DISMISS</td></tr>
+  <tr><td>GET</td><td>/api/events/summary, /api/events/outbox</td><td>Pipeline counters; events with publication and consumer state</td></tr>
+  <tr><td>POST</td><td>/api/events/outbox/{id}/redeliver</td><td>Send an event again (duplicate-delivery demo)</td></tr>
+  <tr><td>POST</td><td>/api/events/fault-injection</td><td>Make the next N consumptions fail (0 disarms)</td></tr>
+  <tr><td>GET/POST</td><td>/api/events/failures, /failures/{id}/retry</td><td>Retrying and dead-lettered events; manual retry</td></tr>
+  <tr><td>GET</td><td>/api/audit</td><td>Audit trail (filter by entity type and action)</td></tr>
+</table>
+
+<h3>Request and response examples</h3>
+<pre>POST /api/orders          Idempotency-Key: ord-001
+{ "currency": "USD",
+  "items": [ {"productId": "&lt;P1&gt;", "quantity": 2, "unitPrice": 10.00},
+             {"productId": "&lt;P2&gt;", "quantity": 1, "unitPrice": 5.00} ] }
+
+201 { "id": "...", "status": "PENDING_PAYMENT", "totalAmount": 25.00,
+      "items": [...], "reservations": [ {"status": "RESERVED", "quantity": 2, ...}, ... ] }
+
+409 { "status": 409, "message": "Insufficient stock for product ...", ... }</pre>
+<pre>POST /api/orders/{id}/payments/simulate        { "outcome": "TIMED_OUT" }
+201 { "id": "...", "status": "TIMED_OUT", "providerReference": "sim_ref_...", "amount": 25.00 }
+
+POST /api/payments/callbacks
+{ "callbackId": "cb-123", "paymentId": "&lt;PAYMENT&gt;", "result": "SUCCEEDED" }
+200 { "status": "SUCCEEDED", ... }       (sending the same callbackId again changes nothing)
+
+POST /api/reconciliation/records/{id}/resolve
+{ "action": "REFUND_PAYMENT", "notes": "customer refunded" }
+200 { "status": "RESOLVED", "resolutionAction": "REFUND_PAYMENT", ... }</pre>
+
+<h2>5. Event flow and failure handling</h2>
+<ol>
+  <li>A business change (order created, confirmed, cancelled, fulfilled, expired; payment succeeded, failed, timed out, refunded) writes an <code>outbox_events</code> row in the <b>same database transaction</b>.</li>
+  <li>The scheduled publisher reads pending rows every 2 seconds and sends them to Kafka: orders to <code>order-events</code>, payments to <code>payment-events</code>, keyed by aggregate id.</li>
+  <li>Only after Kafka acknowledges is the row stamped <code>published_at</code> and <code>published_via = KAFKA</code>. A failed or timed-out send increments <code>attempt_count</code>, stores <code>last_error</code> and is retried on the next poll.</li>
+  <li>The consumer checks <code>processed_events</code>. A duplicate is skipped and audited. Otherwise it applies its effect and writes the marker in one transaction.</li>
+  <li>If processing fails, the attempt is recorded in <code>event_failures</code> and Kafka redelivers after 2 seconds. A later success marks the failure recovered.</li>
+  <li>After 3 failed attempts the event is marked <code>DEAD_LETTERED</code>, forwarded to <code>&lt;topic&gt;.DLT</code>, and the offset is committed so the partition keeps moving. It can be retried manually from the dashboard or API.</li>
+</ol>
+<p>If the application crashes after Kafka acknowledged but before <code>published_at</code> is written, the event is published again on restart. Delivery is therefore at-least-once, and the idempotent consumer makes the repeat harmless.</p>
+
+<h2>6. Sample data</h2>
+<p>No fixed seed is needed. The demo scripts create their own isolated, timestamped data through the API:</p>
+<table>
+  <tr><th style="width:30%">Script</th><th>Data created</th></tr>
+  <tr><td><code>concurrency-demo.mjs</code></td><td>1 product <code>DEMO-CONC-&lt;timestamp&gt;</code>, 1 warehouse, stock 10; 50 purchase attempts with keys <code>demo-&lt;timestamp&gt;-req-000 ... 049</code></td></tr>
+  <tr><td><code>e2e-demo.mjs</code></td><td>2 products <code>E2E-A / E2E-B</code>, 1 warehouse, stock 10 each; 5 orders covering payment, cancellation, late payment, retry and dead-letter cases (keys <code>e2e-&lt;timestamp&gt;-1 ... 5</code>)</td></tr>
+</table>
+<p>To create data by hand, use the dashboard (Products, Warehouses, Inventory, then Create Order) or the API examples in section 4.</p>
+
+<h2>7. Running locally (Windows)</h2>
+<h3>Prerequisites</h3>
+<ul>
+  <li>Java 17, Maven 3.9+, Node.js 18+</li>
+  <li>PostgreSQL 17 with an empty database named <code>fulfilment</code> (Flyway creates the tables)</li>
+  <li>Kafka 4.x in KRaft mode, for example <code>C:\kafka\kafka_2.13-4.3.1</code> with <code>log.dirs=C:/kafka/data</code></li>
+</ul>
+<h3>Environment variables</h3>
+<table>
+  <tr><th style="width:36%">Variable</th><th style="width:34%">Default</th><th>Note</th></tr>
+  <tr><td>DATABASE_URL</td><td>jdbc:postgresql://localhost:5432/fulfilment</td><td></td></tr>
+  <tr><td>DATABASE_USERNAME</td><td>postgres</td><td></td></tr>
+  <tr><td>DATABASE_PASSWORD</td><td>(none)</td><td>Entered at a prompt; never stored</td></tr>
+  <tr><td>KAFKA_BOOTSTRAP_SERVERS</td><td>localhost:9092</td><td></td></tr>
+  <tr><td>RESERVATION_EXPIRY_MINUTES</td><td>30</td><td>Pending orders older than this expire automatically</td></tr>
+  <tr><td>EVENT_MAX_RETRIES</td><td>3</td><td>Attempts before dead-lettering</td></tr>
+</table>
+<h3>Start, in three PowerShell windows</h3>
+<pre># 1. Kafka
+C:\kafka\kafka_2.13-4.3.1\bin\windows\kafka-server-start.bat C:\kafka\kafka_2.13-4.3.1\config\server.properties
+
+# 2. Backend (prompts for the PostgreSQL password; checks port 8080 first)
+cd C:\Users\hp\Desktop\Assignment
+powershell -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
+
+# 3. Frontend  (npm.cmd avoids the PowerShell execution-policy block)
+cd C:\Users\hp\Desktop\Assignment\frontend
+npm.cmd install
+npm.cmd run dev</pre>
+<p>Open <code>http://localhost:5173</code>. The backend is healthy when <code>http://localhost:8080/actuator/health</code> returns <code>UP</code>.</p>
+
+<h3>Dashboard pages</h3>
+<table>
+  <tr><th style="width:22%">Page</th><th>Content</th></tr>
+  <tr><td>Orders</td><td>Orders grouped by status with counts; open one for products, reservations, status history, payments, callbacks, Kafka events, reconciliation and audit; payment, cancel, fulfil and callback actions.</td></tr>
+  <tr><td>Order Requests</td><td>Every creation request and its outcome, including rejections.</td></tr>
+  <tr><td>Inventory</td><td>Available, reserved and fulfilled per product and warehouse.</td></tr>
+  <tr><td>Payments, Reconciliation</td><td>Payment attempts, callbacks, mismatches, corrective actions and audit trail.</td></tr>
+  <tr><td>Event Pipeline, Failed Events / DLT</td><td>Publication and consumption state, retry counts, errors, dead-lettered events, failure simulation.</td></tr>
+</table>
+
+<h2>8. Known limitations</h2>
+<ul>
+  <li>Designed for a single backend instance; several instances would need row-level claiming in the outbox poller.</li>
+  <li>The consumer records an audited processing step; a real downstream worker would plug into the same idempotent consumer.</li>
+  <li>Unit prices come from the order request, as products have no price list.</li>
+  <li>Failure simulation is in-memory, explicitly armed and audited, and exists for demonstrations only.</li>
+</ul>
+
+<div class="foot">Generated from the project README and the verified test and demonstration runs. Full detail: README.md in the project root.</div>
+</body>
+</html>

@@ -1,7 +1,7 @@
 package com.assignment.fulfilment.catalog;
 
 /**
- * Products and warehouses. Business logic is not implemented yet.
+ * Products and warehouses.
  */
 public final class CatalogModule {
 

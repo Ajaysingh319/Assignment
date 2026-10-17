@@ -15,7 +15,9 @@ public record ReconciliationRecordResponse(
         String details,
         Instant detectedAt,
         Instant updatedAt,
-        Instant resolvedAt
+        Instant resolvedAt,
+        String resolutionAction,
+        String resolutionNotes
 ) {
     public static ReconciliationRecordResponse from(ReconciliationRecord record) {
         return new ReconciliationRecordResponse(
@@ -28,7 +30,9 @@ public record ReconciliationRecordResponse(
                 record.getDetails(),
                 record.getDetectedAt(),
                 record.getUpdatedAt(),
-                record.getResolvedAt()
+                record.getResolvedAt(),
+                record.getResolutionAction(),
+                record.getResolutionNotes()
         );
     }
 }

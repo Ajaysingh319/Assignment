@@ -1,7 +1,7 @@
 package com.assignment.fulfilment.orders;
 
 /**
- * Order creation and lifecycle. Business logic is not implemented yet.
+ * Order creation and lifecycle.
  */
 public final class OrdersModule {
 

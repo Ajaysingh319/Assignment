@@ -31,4 +31,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     @EntityGraph(attributePaths = {"items"})
     List<Order> findByStatusOrderByCreatedAtDesc(OrderStatus status);
+
+    @Query("SELECT o.id FROM Order o WHERE o.status = :status AND o.createdAt < :before ORDER BY o.createdAt ASC")
+    List<UUID> findIdsByStatusAndCreatedAtBefore(@Param("status") OrderStatus status, @Param("before") java.time.Instant before);
 }

@@ -20,6 +20,12 @@ spring:
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
 
 app:
+  scheduling:
+    enabled: false
+  events:
+    publisher:
+      # Explicit test-only mode: no Kafka in the H2 profile, events are stamped published_via=SIMULATED.
+      simulate-without-kafka: true
   seed:
     enabled: false
 

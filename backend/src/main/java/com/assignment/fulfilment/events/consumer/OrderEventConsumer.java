@@ -13,6 +13,14 @@ import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
+/**
+ * Fulfilment worker consuming order and payment events.
+ *
+ * <p>Each event is applied at most once per consumer (processed_events). A failed attempt is recorded in
+ * event_failures and re-thrown so the listener container redelivers it after a back-off; once
+ * {@code app.events.max-retries} attempts have failed the event is dead-lettered to {@code <topic>.DLT}
+ * and the offset is committed so the partition is not blocked.
+ */
 @Component
 public class OrderEventConsumer {
 
@@ -20,22 +28,31 @@ public class OrderEventConsumer {
     private static final Logger log = LoggerFactory.getLogger(OrderEventConsumer.class);
 
     private final IdempotentEventConsumer idempotentEventConsumer;
+    private final EventRetryHandler eventRetryHandler;
+    private final ConsumerFaultInjector faultInjector;
     private final AuditLogRepository auditLogRepository;
     private final ObjectMapper objectMapper;
     private final AtomicInteger processedCount = new AtomicInteger(0);
+    private final String consumerName;
 
     public OrderEventConsumer(
             IdempotentEventConsumer idempotentEventConsumer,
+            EventRetryHandler eventRetryHandler,
+            ConsumerFaultInjector faultInjector,
             AuditLogRepository auditLogRepository,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            @org.springframework.beans.factory.annotation.Value("${app.events.consumer-name:" + CONSUMER_NAME + "}") String consumerName
     ) {
         this.idempotentEventConsumer = idempotentEventConsumer;
+        this.eventRetryHandler = eventRetryHandler;
+        this.faultInjector = faultInjector;
         this.auditLogRepository = auditLogRepository;
         this.objectMapper = objectMapper;
+        this.consumerName = consumerName;
     }
 
     @KafkaListener(
-            topics = "order-events",
+            topics = {"order-events", "payment-events"},
             groupId = "${spring.kafka.consumer.group-id:fulfilment-order-group}",
             autoStartup = "${app.kafka.consumer.auto-startup:true}"
     )
@@ -45,17 +62,33 @@ public class OrderEventConsumer {
             @Header(name = KafkaHeaders.RECEIVED_PARTITION, required = false) Integer partition,
             @Header(name = KafkaHeaders.OFFSET, required = false) Long offset
     ) {
+        String resolvedTopic = topic != null ? topic : "order-events";
+        EventEnvelope envelope;
         try {
-            EventEnvelope envelope = objectMapper.readValue(message, EventEnvelope.class);
-            consumeEnvelope(envelope, topic != null ? topic : "order-events", partition, offset);
+            envelope = objectMapper.readValue(message, EventEnvelope.class);
+            if (envelope.eventId() == null || envelope.eventId().isBlank()) {
+                throw new IllegalArgumentException("Event envelope has no eventId");
+            }
         } catch (Exception e) {
-            log.error("Failed to parse event message: {}", message, e);
+            eventRetryHandler.recordPoisonMessage(resolvedTopic, partition, offset, consumerName, message,
+                    e.getClass().getSimpleName() + ": " + e.getMessage());
+            return;
+        }
+
+        IdempotentEventConsumer.Outcome outcome = consume(envelope, resolvedTopic, partition, offset);
+        if (outcome == IdempotentEventConsumer.Outcome.FAILED_WILL_RETRY) {
+            // Re-throw so the container's error handler re-seeks and Kafka redelivers this record.
+            throw new RetryableEventException("Event " + envelope.eventId() + " failed and will be redelivered");
         }
     }
 
     public boolean consumeEnvelope(EventEnvelope envelope, String topic, Integer partition, Long offset) {
-        return idempotentEventConsumer.processIdempotently(
-                CONSUMER_NAME,
+        return consume(envelope, topic, partition, offset) == IdempotentEventConsumer.Outcome.PROCESSED;
+    }
+
+    private IdempotentEventConsumer.Outcome consume(EventEnvelope envelope, String topic, Integer partition, Long offset) {
+        return idempotentEventConsumer.process(
+                consumerName,
                 envelope,
                 topic,
                 partition,
@@ -65,22 +98,34 @@ public class OrderEventConsumer {
     }
 
     private void applyBusinessEffects(EventEnvelope envelope) throws Exception {
-        log.info("Processing order event: id={}, type={}, aggregateId={}",
-                envelope.eventId(), envelope.eventType(), envelope.aggregateId());
+        log.info("Processing {} event: id={}, type={}, aggregateId={}",
+                envelope.aggregateType(), envelope.eventId(), envelope.eventType(), envelope.aggregateId());
 
-        processedCount.incrementAndGet();
+        faultInjector.maybeFail(envelope);
 
-        // Audit the processed event atomically with consumer effects
+        // Audit the processed event atomically with the processed-event marker
         auditLogRepository.save(new AuditLog(
                 "consumer_event",
                 envelope.aggregateId(),
                 "CONSUMED_" + envelope.eventType(),
-                CONSUMER_NAME,
+                consumerName,
                 "eventId=" + envelope.eventId() + ", version=" + envelope.eventVersion()
         ));
+
+        processedCount.incrementAndGet();
+    }
+
+    public String getConsumerName() {
+        return consumerName;
     }
 
     public int getProcessedCount() {
         return processedCount.get();
+    }
+
+    public static class RetryableEventException extends RuntimeException {
+        public RetryableEventException(String message) {
+            super(message);
+        }
     }
 }

@@ -1,7 +1,7 @@
 package com.assignment.fulfilment.payments;
 
 /**
- * Simulated payment outcomes and callbacks. Business logic is not implemented yet.
+ * Simulated payment outcomes and callbacks.
  */
 public final class PaymentsModule {
 

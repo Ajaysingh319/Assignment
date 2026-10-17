@@ -18,4 +18,6 @@ public interface EventFailureRepository extends JpaRepository<EventFailure, UUID
     Optional<EventFailure> findByEventIdAndConsumerName(String eventId, String consumerName);
 
     long countByStatus(EventFailureStatus status);
+
+    List<EventFailure> findByEventIdIn(java.util.Collection<String> eventIds);
 }

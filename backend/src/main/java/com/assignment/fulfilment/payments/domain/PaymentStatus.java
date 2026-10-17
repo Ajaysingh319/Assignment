@@ -4,5 +4,7 @@ public enum PaymentStatus {
     PENDING,
     SUCCEEDED,
     FAILED,
-    TIMED_OUT
+    TIMED_OUT,
+    /** Simulated refund issued as a reconciliation corrective action. */
+    REFUNDED
 }

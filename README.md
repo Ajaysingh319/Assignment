@@ -1,296 +1,277 @@
 # Distributed Order Fulfilment and Reconciliation Platform
 
-A high-reliability distributed order fulfilment, atomic inventory reservation, transactional outbox, asynchronous event processing, payment simulation, and reconciliation platform built with **Spring Boot 3.4 (Java 17)** and a **React 19 + TypeScript + Vite** operations dashboard.
+Order fulfilment with atomic multi-warehouse inventory reservation, a transactional outbox published to Apache Kafka,
+idempotent consumers with bounded retries and dead-lettering, simulated payments with callbacks, and reconciliation
+with audited corrective actions. Backend: **Spring Boot 3.4 / Java 17** (modular monolith). Frontend: **React 19 +
+TypeScript + Vite** operations dashboard. **PostgreSQL** is the source of truth. Runs natively on Windows; Docker is not required.
 
 ---
 
-## 1. Architecture Overview
-
-The system is architected as a clean **Modular Monolith** adhering to strict domain boundaries with **PostgreSQL as the source of truth**:
+## 1. Architecture
 
 ```mermaid
 graph TD
-    UI[React Operations Dashboard<br/>Vite / TypeScript] -->|REST / JSON| GW[API Layer / Controllers]
-
-    subgraph "Modular Monolith Backend (Spring Boot 3.4 / Java 17)"
-        GW --> ORD[Order Service]
-        GW --> INV[Inventory Service]
-        GW --> PAY[Payment Service]
-        GW --> REC[Reconciliation Service]
-        GW --> EVT[Event Management & DLT API]
-
-        ORD -->|Transactional Reservation| INV
-        ORD -->|Transactional Outbox| OUTBOX[(outbox_events)]
-        PAY -->|Transactional Outbox| OUTBOX
-
-        subgraph "Database (PostgreSQL / Flyway Migrations)"
-            DB_CAT[(products / warehouses)]
-            DB_INV[(inventory / reservations)]
-            DB_ORD[(orders / order_items)]
-            DB_PAY[(payments / payment_callbacks)]
-            DB_EVT[(processed_events / event_failures)]
-            DB_REC[(reconciliation_records / audit_logs)]
-            OUTBOX
-        end
-
-        PUB[Outbox Publisher<br/>Scheduled Worker] -->|Reads unpublished| OUTBOX
-        PUB -->|Publish Event| KAFKA{{Apache Kafka}}
-
-        KAFKA -->|Consume Event| CON[Idempotent Consumers]
-        CON -->|Deduplicate with| DB_EVT
-        CON -->|Exhausted retries| DLT[Dead-Letter Queue / Failures]
+    UI[React dashboard :5173] -->|REST /api| API[Spring Boot :8080]
+    subgraph Backend [Modular monolith]
+        API --> ORD[orders] --> INV[inventory]
+        API --> PAY[payments] --> ORD
+        API --> REC[reconciliation] --> PAY
+        API --> DASH[dashboard: read models]
+        ORD -->|same DB transaction| OUT[(outbox_events)]
+        PAY -->|same DB transaction| OUT
+        PUB[OutboxPublisher @Scheduled 2s] --> OUT
+        PUB -->|ack required| K{{Kafka: order-events / payment-events}}
+        K --> CON[OrderEventConsumer]
+        CON -->|dedupe| PE[(processed_events)]
+        CON -->|failed attempt| EF[(event_failures)]
+        CON -->|after 3 attempts| DLT{{order-events.DLT / payment-events.DLT}}
+        EXP[OrderExpiryScheduler @Scheduled 30s] --> ORD
     end
 ```
 
-### Core Modules
-* **`catalog`**: Products and warehouse facilities with positive constraint validations.
-* **`inventory`**: Stock levels, deterministic warehouse allocation, atomic conditional reservations, and stock invariant enforcement.
-* **`orders`**: Multi-item order creation, lifecycle state transitions, canonical payload hashing, and database-enforced idempotency.
-* **`payments`**: Payment authorizations, outcome simulations (`SUCCEEDED`, `FAILED`, `TIMED_OUT`), and idempotent webhook callback ingestion.
-* **`events`**: Transactional outbox table, asynchronous Kafka publishing, consumer deduplication via `processed_events`, exponential backoff, and Dead-Letter Topic (DLT) management.
-* **`reconciliation`**: Discrepancy detector (cancelled orders with successful payments, missing payments, reservation inconsistencies, stale pending orders) and idempotent corrective actions.
-* **`common`**: Global exception mapping, audit logging, and `X-Correlation-Id` propagation via MDC.
+| Module | Responsibility |
+| --- | --- |
+| `catalog` | Products and warehouses. |
+| `inventory` | Stock per product/warehouse (`available`, `reserved`, `fulfilled`), reservation, release, fulfilment. |
+| `orders` | Idempotent order creation, lifecycle, request-outcome history (`order_requests`), automatic expiry. |
+| `payments` | Simulated payment attempts (SUCCEEDED / FAILED / TIMED_OUT), provider callbacks with deduplication, simulated refunds. |
+| `events` | Transactional outbox, Kafka publisher, idempotent consumer, retries, dead-letter, fault injection for demos. |
+| `reconciliation` | Compares persisted payments with persisted orders and reservations; mismatch records and corrective actions. |
+| `dashboard` | Read-only aggregation for the UI (`/api/orders/{id}/details`, `/api/audit`). |
+| `common` | Audit log, error mapping, correlation ids, scheduling config. |
+
+### Key guarantees
+
+| Concern | Mechanism |
+| --- | --- |
+| No overselling | Inventory rows locked `PESSIMISTIC_WRITE` in deterministic order, plus conditional `UPDATE … WHERE available_qty >= :qty`; DB `CHECK (available_qty >= 0)`. |
+| No partial multi-product reservation | All lines are reserved in one transaction; any shortfall throws `InsufficientStockException` and rolls everything back. |
+| No duplicate orders | `Idempotency-Key` header + unique constraint; same key + same payload returns the original order, different payload → 409. |
+| No lost events | Outbox row written in the same transaction as the business change; published only after Kafka acknowledges (`published_via = KAFKA`). |
+| No fake publication | Without Kafka, events stay pending. The H2 test profile can opt into `simulate-without-kafka`, which stamps `published_via = SIMULATED`. |
+| No duplicate effects | Consumer writes its business effect and the `processed_events (consumer, event_id)` marker in one transaction. |
+| Bounded retries | Failed attempt → `event_failures` (attempts, timestamps, error) → rethrow → Kafka redelivery after 2 s. After 3 attempts → `DEAD_LETTERED`, forwarded to `<topic>.DLT`, offset committed. |
+| Contradictory transitions | Order transitions are guarded under row locks (e.g. CANCELLED can never become CONFIRMED/FULFILLED). A late payment success on a cancelled order is recorded, not applied, and raises a reconciliation mismatch. |
+
+### Rejected purchase attempts (design choice)
+
+A request rejected for insufficient stock **does not become an order**. The `orders` table holds only real orders.
+Every request outcome, including rejections, idempotent replays and key conflicts, is stored in **`order_requests`**
+and shown on the **Order Requests** page. So "50 attempts against 10 units" shows up as 10 orders on the Orders page
+and as 50 requests (10 ACCEPTED, 40 REJECTED_INSUFFICIENT_STOCK) on the Order Requests page.
+
+### Order lifecycle
+
+```
+PENDING_PAYMENT ──payment SUCCEEDED / confirm──▶ CONFIRMED ──fulfil──▶ FULFILLED
+       │
+       ├──cancel────────────────▶ CANCELLED   (reservations released)
+       └──expire (30 min, auto)─▶ CANCELLED   (reservations released, audit ORDER_EXPIRED)
+```
+
+Payment SUCCEEDED after cancellation/expiry: the order stays CANCELLED, the payment is recorded as SUCCEEDED and a
+`PAYMENT_SUCCEEDED_ORDER_CANCELLED` reconciliation record is opened. The corrective action `REFUND_PAYMENT` marks the
+payment REFUNDED and audits it.
 
 ---
 
-## 2. Invariants & Key Guarantees
+## 2. Database schema (Flyway, `backend/src/main/resources/db/migration`)
 
-| Invariant | Guarantee & Implementation Mechanism |
-| :--- | :--- |
-| **Zero Overselling** | Conditional atomic SQL updates (`UPDATE inventory SET available_qty = available_qty - ? WHERE available_qty >= ?`) with deterministic warehouse ordering (`ORDER BY warehouse_id`) using pessimistic write locks (`PESSIMISTIC_WRITE`). Tested with 100 concurrent requests against 10 stock items: exactly 10 succeed, 90 fail. |
-| **All-or-Nothing Multi-Item** | If any item line in a multi-item order cannot be fully allocated across eligible warehouses, the entire transaction rolls back (`InsufficientStockException`). |
-| **Stock Tracking Invariant** | `available_qty + reserved_qty + fulfilled_qty == tracked_total` holds true across all lifecycle transitions (reserve, cancel, expire, fulfil). |
-| **Order Idempotency** | Orders require an `Idempotency-Key` header. Same key + identical payload returns the existing order safely. Same key + different payload returns `HTTP 409 Conflict`. Race conditions resolve deterministically via PostgreSQL unique constraint. |
-| **Dual-Write Protection** | Domain state changes and outbox events are committed inside the **same atomic database transaction**. |
-| **At-Least-Once Delivery Tolerance** | Event consumers track processed event IDs in a durable `processed_events` table within the consumer's local transaction. Duplicate event deliveries produce zero side effects. |
-| **Late Callback Protection** | Payment callbacks check order state before applying transitions. A delayed `SUCCEEDED` callback for an already `CANCELLED` order does not revert the order to `CONFIRMED`; instead, it records the payment and flags a reconciliation mismatch for review. |
-| **Idempotent Reconciliation** | Repeated runs of the reconciliation engine detect active discrepancies without creating duplicate unresolved records or duplicating simulated actions. |
-
----
-
-## 3. Data Model & Schema (Flyway Migrations)
-
-All database tables are version-controlled via Flyway migrations in `src/main/resources/db/migration`:
-
-1. `V1__foundation.sql`: Audit logs (`audit_logs`) and common structures.
-2. `V2__catalog_and_inventory.sql`: `products`, `warehouses`, and `inventory` with tracking columns.
-3. `V3__inventory_reservations.sql`: `reservations` referencing orders, products, and warehouses.
-4. `V4__orders.sql`: `orders` and `order_items` with unique constraint `uq_orders_idempotency_key` and canonical `request_hash`.
-5. `V5__events_and_outbox.sql`: `outbox_events`, composite-keyed `processed_events`, and `event_failures` (DLT).
-6. `V6__payments_and_reconciliation.sql`: `payments`, `payment_callbacks`, and `reconciliation_records`.
+| Migration | Tables |
+| --- | --- |
+| V1 | `schema_foundation` |
+| V2 | `products`, `warehouses`, `inventory` (PK product+warehouse, non-negative checks), `audit_log` |
+| V3 | `reservations` (order, product, warehouse, qty, status RESERVED/CONFIRMED/RELEASED/FULFILLED) |
+| V4 | `orders` (unique `idempotency_key`, `request_hash`), `order_items` |
+| V5 | `outbox_events`, `processed_events` (PK consumer+event), `event_failures` |
+| V6 | `payments`, `payment_callbacks` (unique `provider_callback_id`), `reconciliation_records` (unique `mismatch_key`) |
+| V7 | `outbox_events.published_via`, `order_requests`, `reconciliation_records.resolution_action/notes`, indexes |
 
 ---
 
-## 4. API Specification & cURL Examples
-
-### Base URLs
-* **Backend API**: `http://localhost:8080`
-* **Frontend Operations Dashboard**: `http://localhost:5173` (proxies `/api` and `/actuator` to `8080`)
-
-### 1. Catalog & Inventory
-```bash
-# List products
-curl -s http://localhost:8080/api/products
-
-# List warehouses
-curl -s http://localhost:8080/api/warehouses
-
-# Get grouped inventory status
-curl -s http://localhost:8080/api/inventory
-
-# Adjust inventory stock (+10 units)
-curl -s -X POST http://localhost:8080/api/inventory/adjustments \
-  -H "Content-Type: application/json" \
-  -d '{"productId":"<PRODUCT_UUID>","warehouseId":"<WAREHOUSE_UUID>","availableDelta":10}'
-```
-
-### 2. Orders
-```bash
-# Create multi-item order (requires Idempotency-Key)
-curl -s -X POST http://localhost:8080/api/orders \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: ord-key-001" \
-  -d '{
-    "currency": "USD",
-    "items": [
-      {"productId": "<PRODUCT_UUID>", "quantity": 2, "unitPrice": 25.00}
-    ]
-  }'
-
-# List orders (filter by status: PENDING_PAYMENT, CONFIRMED, FULFILLED, CANCELLED)
-curl -s "http://localhost:8080/api/orders?status=PENDING_PAYMENT"
-
-# Cancel an order (releases reserved inventory atomically)
-curl -s -X POST http://localhost:8080/api/orders/<ORDER_UUID>/cancel
-
-# Fulfil a confirmed order (moves reserved stock to fulfilled)
-curl -s -X POST http://localhost:8080/api/orders/<ORDER_UUID>/fulfil
-```
-
-### 3. Payments & Webhook Callbacks
-```bash
-# Simulate gateway outcome (SUCCEEDED, FAILED, TIMED_OUT)
-curl -s -X POST http://localhost:8080/api/orders/<ORDER_UUID>/payments/simulate \
-  -H "Content-Type: application/json" \
-  -d '{"outcome":"SUCCEEDED","amount":50.00,"currency":"USD"}'
-
-# Ingest asynchronous webhook callback (idempotent deduplication by callbackId)
-curl -s -X POST http://localhost:8080/api/payments/callbacks \
-  -H "Content-Type: application/json" \
-  -d '{"callbackId":"cb-web-991","paymentId":"<PAYMENT_UUID>","status":"SUCCEEDED"}'
-
-# List payments & callback audit logs
-curl -s http://localhost:8080/api/payments
-curl -s http://localhost:8080/api/payments/callbacks
-```
-
-### 4. Reconciliation
-```bash
-# Execute reconciliation scan
-curl -s -X POST http://localhost:8080/api/reconciliation/run
-
-# List reconciliation mismatch records
-curl -s http://localhost:8080/api/reconciliation/records
-
-# Resolve or dismiss a mismatch
-curl -s -X POST http://localhost:8080/api/reconciliation/records/<RECORD_UUID>/resolve \
-  -H "Content-Type: application/json" \
-  -d '{"action":"RESOLVE","notes":"Customer contacted; refund review completed."}'
-```
-
-### 5. Failed Events & DLT Operations
-```bash
-# List failed/dead-lettered events
-curl -s http://localhost:8080/api/events/failures
-
-# Retry a single failed event
-curl -s -X POST http://localhost:8080/api/events/failures/<FAILURE_UUID>/retry
-
-# Trigger outbox publisher sweep
-curl -s -X POST http://localhost:8080/api/events/outbox/publish
-```
-
----
-
-## 5. Operations Dashboard
-
-Built with **React 19, TypeScript, and Vite**, providing a comprehensive operational view:
-
-1. **Orders View**:
-   * Multi-item order creation form with dynamic line items, validation, and live price calculation.
-   * Status filter tabs (`ALL`, `PENDING_PAYMENT`, `CONFIRMED`, `FULFILLED`, `CANCELLED`).
-   * Order details modal showing line totals, inventory reservation records, and lifecycle timestamps.
-   * Actions: Confirm Order, Cancel Order, Fulfil Order, and Simulate Payment.
-
-2. **Inventory & Warehouse Allocation**:
-   * Product and warehouse stock distribution breakdown.
-   * Available, Reserved, and Fulfilled counters with stacked progress allocation bars.
-   * Stock Invariant integrity indicator (`available + reserved + fulfilled == trackedTotal`).
-   * Stock adjustment modal supporting positive (restock) and negative (write-off) stock adjustments.
-
-3. **Payment Operations**:
-   * Authorizations table with status badges and provider references.
-   * Webhook callback audit trail with payload inspector modal.
-   * Callback simulator modal with payment selection dropdown and row-level callback triggers.
-
-4. **Reconciliation Console**:
-   * Automatic and on-demand mismatch detection across orders, payments, and stock.
-   * Displays mismatch category, affected entities, and simulated corrective actions.
-   * Resolution modal for operators to mark records `RESOLVED` or `DISMISSED` with audit notes.
-
-5. **Failed Events & DLT**:
-   * Dead-lettered and retrying event stream with failure summary metrics.
-   * Single-click retry and batch retry for eligible transient failures.
-   * Manual Outbox trigger to flush pending events.
-
----
-
-## 6. Local Setup & Running Instructions
+## 3. Windows setup
 
 ### Prerequisites
-* **Java 17** (e.g. Eclipse Adoptium OpenJDK 17)
-* **Maven 3.9+**
-* **Node.js 18+** & npm
+* Java 17 (Temurin), Maven 3.9+, Node.js 18+.
+* PostgreSQL 17 with a database `fulfilment` (`CREATE DATABASE fulfilment;`). Flyway creates the tables.
+* Kafka 4.x in KRaft mode, e.g. `C:\kafka\kafka_2.13-4.3.1` with `log.dirs=C:/kafka/data` in `config\server.properties`.
 
-### Running the Backend
+### Environment variables
 
-#### Development Mode (Default with In-Memory H2 in PostgreSQL Mode)
-The application includes an in-memory development profile (`dev`) that boots instantly without requiring an external PostgreSQL instance or Kafka cluster:
-```powershell
-cd backend
-mvn spring-boot:run "-Dspring-boot.run.profiles=dev"
-```
-* Runs on: `http://localhost:8080`
-* Automatically runs Flyway migrations and seeds initial product (`WIDGET-RED`) and warehouse (`WH-EAST`) with 10 units.
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | `jdbc:postgresql://localhost:5432/fulfilment` | |
+| `DATABASE_USERNAME` | `postgres` | |
+| `DATABASE_PASSWORD` | — | Prompted for by the scripts; never commit it. |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | |
+| `RESERVATION_EXPIRY_MINUTES` | `30` | PENDING_PAYMENT orders older than this are expired automatically. |
+| `RECONCILIATION_STALE_PENDING_MINUTES` | `60` | Threshold for STALE_PENDING_ORDER / STALE_PENDING_PAYMENT. |
+| `EVENT_MAX_RETRIES` / `EVENT_RETRY_BACKOFF_MS` | `3` / `2000` | Consumer attempts before dead-lettering, and redelivery delay. |
+| `OUTBOX_POLL_INTERVAL_MS` | `2000` | Outbox publisher poll interval. |
 
-#### Production Mode (with external PostgreSQL and Kafka)
-Copy `.env.example` to `.env` and set your credentials:
-```powershell
-SPRING_PROFILES_ACTIVE=local
-DATABASE_URL=jdbc:postgresql://localhost:5432/fulfilment
-DATABASE_USERNAME=postgres
-DATABASE_PASSWORD=your_password
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-```
-Then launch:
-```powershell
-cd backend
-mvn spring-boot:run
-```
+### Start the services (three PowerShell windows)
 
-### Running the Frontend
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-* Dashboard runs at: `http://localhost:5173`
-* Vite dev server automatically proxies `/api` and `/actuator` calls to the Spring Boot backend at `http://localhost:8080`.
+1. **Kafka** (KRaft; format storage once if `C:\kafka\data` is new: `bin\windows\kafka-storage.bat format ...`):
+   ```powershell
+   C:\kafka\kafka_2.13-4.3.1\bin\windows\kafka-server-start.bat C:\kafka\kafka_2.13-4.3.1\config\server.properties
+   ```
+   Check it: `Test-NetConnection localhost -Port 9092`. Topics are created by the backend on start
+   (`order-events`, `payment-events`, `inventory-events`, `order-events.DLT`, `payment-events.DLT`).
 
----
+2. **Backend** (prompts for the PostgreSQL password; offers to stop an older instance of *this* app on 8080, refuses to touch anything else):
+   ```powershell
+   cd C:\Users\hp\Desktop\Assignment
+   powershell -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
+   ```
+   Equivalent manual steps: set the env vars above, then `cd backend; mvn spring-boot:run`.
+   Healthy when `curl http://localhost:8080/actuator/health` returns `UP`.
 
-## 7. Automated Test Suite
-
-Run the automated test suite using Maven:
-```powershell
-cd backend
-mvn clean test
-```
-
-### Test Suite Execution & Infrastructure Boundaries
-
-The test suite explicitly distinguishes between in-memory hermetic tests and live infrastructure integration tests:
-
-1. **Hermetic In-Memory (H2 PostgreSQL Compatibility Mode) Tests**:
-   * Run by default on every build without external services.
-   * `InventoryReservationEngineTest`: Concurrency stress test verifying that **100 concurrent threads attempting to reserve 1 unit against 10 stock results in exactly 10 successes and 90 failures**, with final available quantity equal to 0.
-   * `OrderLifecycleTest` & `OrderApiTest`: Tests all valid state machine transitions, rejects illegal transitions, and validates all-or-nothing rollback on insufficient stock.
-   * `OrderServiceIdempotencyTest`: Validates identical payloads returning original order and mismatched payloads triggering HTTP 409 Conflict.
-   * `PaymentProcessingTest` & `PaymentApiTest`: Tests outcome simulations, idempotent duplicate webhook callback deduplication, and late callback handling.
-   * `ReconciliationTest`: Verifies detection of successful payments on cancelled orders, missing payments on confirmed orders, reservation state discrepancies, and idempotent re-execution.
-   * `EventProcessingTest` & `FailedEventWorkflowTest`: Tests outbox record creation, consumer deduplication via `processed_events`, retry backoff limits, and DLT routing.
-   * `InventoryReservationApiTest`: Tests stock adjustments via `availableDelta`, reservation lifecycles, and rollback.
-
-2. **Live PostgreSQL Concurrency Integration Test (`PostgresInventoryConcurrencyIntegrationTest`)**:
-   * Requires a running PostgreSQL instance with configured credentials (`DATABASE_PASSWORD`, `DATABASE_URL`, `DATABASE_USERNAME`).
-   * Validates whether PostgreSQL is actually usable via JDBC before executing. If credentials are not configured or PostgreSQL is unreachable, the test is cleanly skipped (never failed with authentication errors, and never falsely reported as passing).
-   * When enabled, executes 100 concurrent threads against PostgreSQL row locks, verifying all-or-nothing rollback and prevention of overselling against a real database.
-
-3. **Live Kafka Broker Integration Test (`KafkaBrokerIntegrationTest`)**:
-   * Requires an active Kafka broker listening on `localhost:9092`.
-   * Checks socket availability before execution. If Kafka is unavailable, the test is cleanly skipped.
-   * When enabled, produces and consumes partition-keyed messages directly against the broker.
+3. **Frontend**:
+   ```powershell
+   cd C:\Users\hp\Desktop\Assignment\frontend
+   npm.cmd install
+   npm.cmd run dev
+   ```
+   Open http://localhost:5173. (Use `npm.cmd` if PowerShell's execution policy blocks `npm.ps1`.)
 
 ---
 
-## 8. Architectural Trade-offs & Design Decisions
+## 4. Tests
 
-1. **Modular Monolith over Distributed Microservices**:
-   * *Trade-off*: Single deployable artifact rather than 6 distinct network services.
-   * *Rationale*: Guarantees atomic database transactions across inventory and orders without complex two-phase commit (2PC) or Saga orchestrators, while maintaining modular package boundaries for future service extraction.
-2. **PostgreSQL as Source of Truth over Distributed Locks (Redis)**:
-   * *Trade-off*: Row-level write locks on PostgreSQL rather than Redis Redlock.
-   * *Rationale*: Eliminates clock-drift vulnerabilities, split-brain scenarios, and split state across Redis and PostgreSQL. Deterministic sorting by warehouse ID prevents deadlocks.
-3. **Transactional Outbox over Direct Kafka Publishing**:
-   * *Trade-off*: Requires a background publisher polling the outbox table.
-   * *Rationale*: Guarantees that business state changes are never lost if Kafka is temporarily unreachable during the commit phase (dual-write problem solved).
+```powershell
+# H2-only suite (no external services). PostgreSQL/Kafka tests are reported as SKIPPED, never as passed.
+cd backend; mvn test
+
+# Full suite including PostgreSQL + Kafka integration tests (prompts for the password):
+powershell -ExecutionPolicy Bypass -File .\scripts\run-integration-tests.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-integration-tests.ps1 -Test PostgresOrderConcurrencyIntegrationTest
+```
+
+| Area | Tests |
+| --- | --- |
+| Concurrent reservations | `InventoryReservationEngineTest` (H2), `PostgresInventoryConcurrencyIntegrationTest` (service level, PostgreSQL), `PostgresOrderConcurrencyIntegrationTest` (100 HTTP order requests vs 10 units on PostgreSQL; asserts orders, reservations, `order_requests`) |
+| Order outcomes, multi-product, cancellation, expiry | `OrderRequestOutcomeTest`, `OrderLifecycleTest`, `OrderApiTest` |
+| Duplicate events, retries, DLT | `ConsumerRetryAndDeadLetterTest`, `EventProcessingTest`, `FailedEventWorkflowTest` |
+| Outbox publication semantics | `OutboxPublisherUnitTest` (no Kafka → stays pending; failed send → attempt + error; ack → KAFKA) |
+| Real Kafka workflows | `KafkaAutomaticPipelineIntegrationTest` (scheduler publishes and listener consumes with no manual call; transient failure recovers; persistent failure dead-lettered), `KafkaOutboxEndToEndIntegrationTest`, `KafkaBrokerIntegrationTest` |
+| Payments and duplicate callbacks | `PaymentProcessingTest`, `PaymentApiTest`, `PaymentReconciliationFlowTest` |
+| Reconciliation and corrective actions | `ReconciliationTest`, `PaymentReconciliationFlowTest` (late success → single record → REFUND_PAYMENT; double charge; amount mismatch) |
+
+Service-level reservation stress test with configurable size (calls the reservation service directly, **not** the order API):
+```powershell
+cd backend
+mvn "-Dtest=PostgresInventoryConcurrencyIntegrationTest#testConcurrentReservationsAgainstLimitedStockOnPostgres" "-Ddemo.stock=10" "-Ddemo.requests=50" test
+```
+
+---
+
+## 5. Demonstrations against the running stack
+
+Both scripts use only the public HTTP API and verify results by reading persisted state back.
+
+```powershell
+# 50 concurrent POST /api/orders (1 unit each, unique Idempotency-Keys) against 10 units, then 5 retried keys
+node scripts\concurrency-demo.mjs
+node scripts\concurrency-demo.mjs --stock 25 --requests 100 --replays 10
+
+# Full workflow: multi-product order, automatic Kafka publish/consume, payment fail/success, duplicate callbacks,
+# fulfilment, cancellation release, timeout + late success, reconciliation + refund, retry recovery, DLT, duplicate delivery
+node scripts\e2e-demo.mjs
+```
+
+Expected concurrency result: 10 × HTTP 201, 40 × HTTP 409 "Insufficient stock", 10 persisted orders, 0 available /
+10 reserved, `order_requests` ACCEPTED 10 / REJECTED_INSUFFICIENT_STOCK 40 / IDEMPOTENT_REPLAY 5. The 10 orders stay
+PENDING_PAYMENT until paid, cancelled, or expired after 30 minutes, which then releases the stock.
+
+---
+
+## 6. Dashboard walkthrough
+
+| Page | What it shows (all from the API) |
+| --- | --- |
+| **Orders** | Persisted orders with status-group counts, products/units, total, reservation and payment status, created/updated times, search by id / key / SKU. **Open** shows the full order: products with SKUs and prices, per-warehouse reservations, status history, payment attempts with provider references, provider callbacks, every Kafka event with publication and consumption state, reconciliation records, request history, and the full audit trail. Actions: simulate payment (any outcome or amount), deliver a late callback, re-send a duplicate callback, cancel, expire, confirm without payment, fulfil, re-deliver an event. Auto-refreshes every 3 s. |
+| **Order Requests** | Every creation request and its outcome; filter by idempotency-key prefix (e.g. a demo run id). |
+| **Products / Warehouses** | Catalog management. |
+| **Inventory** | Available / reserved / fulfilled per product and warehouse, adjustments. |
+| **Payments** | Payment attempts, callback audit, manual callback sender. |
+| **Reconciliation** | Run reconciliation; mismatch records; corrective actions (REFUND_PAYMENT, EXPIRE_ORDER, RESOLVE, DISMISS); audit trail of runs and decisions. |
+| **Event Pipeline** | Outbox counters, every event's publication (attempts, errors, `published_via`) and consumer outcome; worker-failure simulation; re-delivery. |
+| **Failed Events / DLT** | Retrying and dead-lettered events with attempts and errors; manual retry. |
+
+Suggested demo: run `node scripts\concurrency-demo.mjs`, then open Orders (search the printed run id) and Order Requests
+(key prefix). On Event Pipeline, arm 2 failures for `ORDER_CANCELLED` and cancel an order: the event is retried and
+then recovers. Arm 5 failures and cancel another order: it is dead-lettered and appears under Failed Events / DLT.
+
+---
+
+## 7. API reference
+
+Base URL `http://localhost:8080`. Errors use `{ "timestamp", "status", "error", "message", "path", "correlationId", "details" }`.
+
+```bash
+# Catalog & inventory
+curl -X POST localhost:8080/api/products   -H "Content-Type: application/json" -d '{"sku":"SKU-1","name":"Widget","active":true}'
+curl -X POST localhost:8080/api/warehouses -H "Content-Type: application/json" -d '{"code":"WH-1","name":"Main","active":true}'
+curl -X POST localhost:8080/api/inventory/initialize -H "Content-Type: application/json" -d '{"productId":"<P>","warehouseId":"<W>","initialStock":10}'
+curl -X POST localhost:8080/api/inventory/adjustments -H "Content-Type: application/json" -d '{"productId":"<P>","warehouseId":"<W>","availableDelta":5}'
+curl localhost:8080/api/inventory
+
+# Orders
+curl -X POST localhost:8080/api/orders -H "Content-Type: application/json" -H "Idempotency-Key: ord-001" \
+  -d '{"currency":"USD","items":[{"productId":"<P1>","quantity":2,"unitPrice":10.00},{"productId":"<P2>","quantity":1,"unitPrice":5.00}]}'
+#   201 {"id":"…","status":"PENDING_PAYMENT","totalAmount":25.00,"items":[…],"reservations":[…]}
+#   409 {"message":"Insufficient stock for product …"}  -> recorded as REJECTED_INSUFFICIENT_STOCK
+curl "localhost:8080/api/orders?status=PENDING_PAYMENT"
+curl localhost:8080/api/orders/<ORDER>/details          # full order read model
+curl -X POST localhost:8080/api/orders/<ORDER>/cancel   # also /confirm /fulfil /expire
+curl "localhost:8080/api/orders/requests?keyPrefix=demo-&outcome=REJECTED_INSUFFICIENT_STOCK&limit=100"
+curl "localhost:8080/api/orders/requests/summary?keyPrefix=demo-"
+#   {"ACCEPTED":10,"IDEMPOTENT_REPLAY":5,"REJECTED_INSUFFICIENT_STOCK":40,"REJECTED_IDEMPOTENCY_CONFLICT":0,"REJECTED_INVALID":0,"TOTAL":55}
+
+# Payments
+curl -X POST localhost:8080/api/orders/<ORDER>/payments/simulate -H "Content-Type: application/json" -d '{"outcome":"TIMED_OUT"}'
+#   outcome: SUCCEEDED | FAILED | TIMED_OUT ; optional amount, currency (default: order total)
+curl -X POST localhost:8080/api/payments/callbacks -H "Content-Type: application/json" \
+  -d '{"callbackId":"cb-123","paymentId":"<PAYMENT>","result":"SUCCEEDED"}'   # same callbackId again -> ignored + audited
+curl "localhost:8080/api/payments?orderId=<ORDER>"
+curl "localhost:8080/api/payments/callbacks?paymentId=<PAYMENT>"
+
+# Reconciliation
+curl -X POST localhost:8080/api/reconciliation/run
+#   {"runId":"…","ordersChecked":57,"paymentsChecked":5,"detectedCount":1,"existingCount":3,"records":[…]}
+curl "localhost:8080/api/reconciliation/records?status=ACTION_REQUIRED"
+curl -X POST localhost:8080/api/reconciliation/records/<RECORD>/resolve -H "Content-Type: application/json" \
+  -d '{"action":"REFUND_PAYMENT","notes":"customer refunded"}'   # REFUND_PAYMENT | EXPIRE_ORDER | RESOLVE | DISMISS
+
+# Events
+curl localhost:8080/api/events/summary
+curl "localhost:8080/api/events/outbox?status=PENDING"          # PENDING | PUBLISHED | (all)
+curl -X POST localhost:8080/api/events/outbox/<EVENT>/redeliver  # duplicate delivery demo
+curl -X POST localhost:8080/api/events/outbox/publish            # one poll now (the scheduler runs every 2 s anyway)
+curl -X POST localhost:8080/api/events/fault-injection -H "Content-Type: application/json" \
+  -d '{"failures":2,"eventType":"ORDER_CANCELLED","aggregateId":"<ORDER>"}'   # failures=0 disarms
+curl localhost:8080/api/events/failures/dead-lettered
+curl -X POST localhost:8080/api/events/failures/<FAILURE>/retry
+
+# Audit
+curl "localhost:8080/api/audit?entityType=reconciliation_run&limit=20"
+```
+
+Reconciliation checks: payment SUCCEEDED for a cancelled order; confirmed/fulfilled order without a successful payment;
+reservation state inconsistent with order state; stale pending orders/payments; more than one successful payment per
+order; successful payment amount or currency different from the order.
+
+---
+
+## 8. Known limitations
+
+* Single application instance assumed. The outbox poller is synchronized inside one JVM; with several instances, use
+  `SELECT … FOR UPDATE SKIP LOCKED`. Delivery is at-least-once and consumers are idempotent.
+* The consumer's business effect is an audited processing record (`CONSUMED_<type>`). State changes happen
+  synchronously in the owning module, and Kafka is used for asynchronous processing and observability. A real downstream
+  worker (shipping, notifications) would plug into the same idempotent consumer.
+* Unit prices come from the order request (the catalog has no price list).
+* Fault injection is in-memory and per instance. It is explicitly armed and audited, and exists only for demonstrations.
+* Running the PostgreSQL/Kafka integration tests while the dev backend is up shares the database and topics. The test
+  profile uses its own consumer name and group to stay isolated, but test orders appear in the dashboard.
+* The automatic expiry job expires every PENDING_PAYMENT order older than 30 minutes, including old demo/test orders.

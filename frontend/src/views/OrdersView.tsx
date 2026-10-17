@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { api, ApiError } from "../api/client";
-import type { Order, OrderStatus, Product } from "../types";
+import type { Order, OrderStatus, Payment, Product } from "../types";
 import { Badge } from "../components/Badge";
 import { Spinner } from "../components/Spinner";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { EmptyState } from "../components/EmptyState";
 import { Modal } from "../components/Modal";
+import { OrderDetailPanel } from "../components/OrderDetailPanel";
 
 interface OrdersViewProps {
   onNotify: (type: "success" | "error" | "info", msg: string) => void;
@@ -19,16 +20,34 @@ const STATUS_FILTERS: { label: string; value: OrderStatus | "ALL" }[] = [
   { label: "Cancelled", value: "CANCELLED" },
 ];
 
+/** SUCCEEDED wins; otherwise the latest attempt. Mirrors the backend order-details aggregation. */
+function paymentStatusFor(payments: Payment[] | undefined): string {
+  if (!payments || payments.length === 0) return "NONE";
+  const succeeded = payments.filter((p) => p.status === "SUCCEEDED").length;
+  if (succeeded > 1) return "SUCCEEDED_MULTIPLE";
+  if (succeeded === 1) return "SUCCEEDED";
+  const latest = [...payments].sort((a, b) => a.createdAt.localeCompare(b.createdAt))[payments.length - 1];
+  return latest.status;
+}
+
+function reservationStatusFor(order: Order): string {
+  const statuses = new Set((order.reservations ?? []).map((r) => r.status));
+  if (statuses.size === 0) return "NONE";
+  return statuses.size === 1 ? [...statuses][0] : "MIXED";
+}
+
 export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [paymentsByOrder, setPaymentsByOrder] = useState<Record<string, Payment[]>>({});
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [errorStatus, setErrorStatus] = useState<number | undefined>();
   const [filter, setFilter] = useState<OrderStatus | "ALL">("ALL");
+  const [search, setSearch] = useState("");
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
 
-  // Selected Order for Details Modal
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
 
   // Create Order Modal State
@@ -43,13 +62,18 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
   const [payTargetOrder, setPayTargetOrder] = useState<Order | null>(null);
   const [payOutcome, setPayOutcome] = useState<"SUCCEEDED" | "FAILED" | "TIMED_OUT">("SUCCEEDED");
 
-  const fetchOrders = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const fetchOrders = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
-      const statusParam = filter === "ALL" ? undefined : filter;
-      const data = await api.getOrders(statusParam);
-      setOrders(data);
+      const [orderData, paymentData] = await Promise.all([api.getOrders(), api.getPayments()]);
+      const grouped: Record<string, Payment[]> = {};
+      for (const p of paymentData) {
+        (grouped[p.orderId] ??= []).push(p);
+      }
+      setOrders(orderData);
+      setPaymentsByOrder(grouped);
+      setError(null);
+      setLastLoadedAt(new Date());
     } catch (err: unknown) {
       if (err instanceof ApiError) {
         setError(err.message);
@@ -58,9 +82,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         setError(err instanceof Error ? err.message : "Failed to load orders");
       }
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
-  }, [filter]);
+  }, []);
 
   const fetchProducts = useCallback(async () => {
     try {
@@ -72,7 +96,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         );
       }
     } catch {
-      // Ignore if catalog not populated yet
+      // Catalog may be empty; the create form falls back to a raw product id input
     }
   }, []);
 
@@ -81,50 +105,32 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
     fetchProducts();
   }, [fetchOrders, fetchProducts]);
 
-  const handleConfirm = async (orderId: string) => {
-    setActionLoading(true);
-    try {
-      const updated = await api.confirmOrder(orderId);
-      onNotify("success", `Order ${orderId.substring(0, 8)} confirmed successfully!`);
-      setSelectedOrder(updated);
-      await fetchOrders();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to confirm order";
-      onNotify("error", msg);
-    } finally {
-      setActionLoading(false);
-    }
-  };
+  // Keep the list fresh so expiry, payments and concurrent demo runs show up without a manual refresh
+  useEffect(() => {
+    const t = window.setInterval(() => fetchOrders(true), 10000);
+    return () => window.clearInterval(t);
+  }, [fetchOrders]);
 
-  const handleCancel = async (orderId: string) => {
-    setActionLoading(true);
-    try {
-      const updated = await api.cancelOrder(orderId);
-      onNotify("info", `Order ${orderId.substring(0, 8)} cancelled`);
-      setSelectedOrder(updated);
-      await fetchOrders();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to cancel order";
-      onNotify("error", msg);
-    } finally {
-      setActionLoading(false);
-    }
-  };
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { ALL: orders.length };
+    for (const o of orders) c[o.status] = (c[o.status] ?? 0) + 1;
+    return c;
+  }, [orders]);
 
-  const handleFulfil = async (orderId: string) => {
-    setActionLoading(true);
-    try {
-      const updated = await api.fulfilOrder(orderId);
-      onNotify("success", `Order ${orderId.substring(0, 8)} marked fulfilled!`);
-      setSelectedOrder(updated);
-      await fetchOrders();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fulfil order";
-      onNotify("error", msg);
-    } finally {
-      setActionLoading(false);
-    }
-  };
+  const productNames = useMemo(() => Object.fromEntries(products.map((p) => [p.id, p.sku])), [products]);
+
+  const visibleOrders = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (filter !== "ALL" && o.status !== filter) return false;
+      if (!term) return true;
+      return (
+        o.id.toLowerCase().includes(term) ||
+        o.idempotencyKey.toLowerCase().includes(term) ||
+        o.items.some((i) => (productNames[i.productId] ?? "").toLowerCase().includes(term))
+      );
+    });
+  }, [orders, filter, search, productNames]);
 
   const handleAddItem = () => {
     setLineItems((prev) => [
@@ -187,13 +193,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         items: lineItems.map((it) => ({
           productId: it.productId,
           quantity: parseInt(it.quantity, 10),
-          price: parseFloat(it.unitPrice),
           unitPrice: parseFloat(it.unitPrice),
         })),
       });
       onNotify("success", `Order created! (ID: ${newOrder.id.substring(0, 8)})`);
       setCreateModalOpen(false);
       await fetchOrders();
+      setSelectedOrderId(newOrder.id);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to create order";
       onNotify("error", msg);
@@ -208,17 +214,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
     setActionLoading(true);
     try {
       const p = await api.simulatePayment(payTargetOrder.id, {
-        status: payOutcome,
+        outcome: payOutcome,
         amount: payTargetOrder.totalAmount,
         currency: payTargetOrder.currency,
       });
       onNotify("success", `Payment simulated with status ${p.status}`);
       setPayModalOpen(false);
       await fetchOrders();
-      if (selectedOrder && selectedOrder.id === payTargetOrder.id) {
-        const refreshed = await api.getOrder(selectedOrder.id);
-        setSelectedOrder(refreshed);
-      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Payment simulation failed";
       onNotify("error", msg);
@@ -233,14 +235,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         <div>
           <h2>Order Management</h2>
           <p className="view-subtitle">
-            Lifecycle monitoring, real-time transitions, and reservation coordination.
+            Persisted orders from PostgreSQL, grouped by status. Open an order to see its products,
+            reservations, lifecycle, payments, Kafka events and reconciliation history.
           </p>
         </div>
         <div className="view-actions">
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={fetchOrders}
+            onClick={() => fetchOrders()}
             disabled={loading}
           >
             ↻ Refresh
@@ -255,7 +258,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         </div>
       </div>
 
-      {/* Filter Tabs */}
+      {/* Status groups (counts from the persisted orders) */}
       <div className="filter-tabs" role="tablist">
         {STATUS_FILTERS.map((s) => (
           <button
@@ -267,15 +270,31 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
             onClick={() => setFilter(s.value)}
           >
             {s.label}
+            <span className="tab-counter">{counts[s.value] ?? 0}</span>
           </button>
         ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 12, alignItems: "center", margin: "8px 0 12px" }}>
+        <input
+          type="search"
+          placeholder="Search by order id, idempotency key or SKU…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ maxWidth: 420 }}
+          aria-label="Search orders"
+        />
+        <span className="text-muted text-xs">
+          Showing {visibleOrders.length} of {orders.length} orders
+          {lastLoadedAt ? ` · loaded ${lastLoadedAt.toLocaleTimeString()}` : ""} · rejected purchase attempts are listed under "Order Requests"
+        </span>
       </div>
 
       {error && (
         <ErrorBanner
           message={error}
           statusCode={errorStatus}
-          onRetry={fetchOrders}
+          onRetry={() => fetchOrders()}
         />
       )}
 
@@ -283,15 +302,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
         <div className="loading-card">
           <Spinner size="lg" label="Loading orders from backend..." />
         </div>
-      ) : orders.length === 0 ? (
+      ) : visibleOrders.length === 0 ? (
         <EmptyState
           title="No orders found"
           description={
-            filter === "ALL"
+            orders.length === 0
               ? "No orders have been recorded in the system yet. Click 'Create Order' to start an order."
-              : `There are currently no orders with status '${filter}'.`
+              : "No orders match the current status filter or search."
           }
-          actionLabel="+ Create First Order"
+          actionLabel="+ Create Order"
           onAction={openCreateOrderModal}
         />
       ) : (
@@ -300,232 +319,72 @@ export const OrdersView: React.FC<OrdersViewProps> = ({ onNotify }) => {
             <thead>
               <tr>
                 <th>Order ID</th>
+                <th>Created</th>
+                <th>Products / Units</th>
+                <th>Total</th>
                 <th>Status</th>
-                <th>Currency</th>
-                <th>Total Amount</th>
-                <th>Items</th>
-                <th>Created At</th>
+                <th>Reservation</th>
+                <th>Payment</th>
+                <th>Last updated</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {orders.map((ord) => (
-                <tr key={ord.id}>
-                  <td className="font-mono text-xs">
-                    <span title={ord.id}>{ord.id.substring(0, 8)}...</span>
-                  </td>
-                  <td>
-                    <Badge status={ord.status} />
-                  </td>
-                  <td>{ord.currency}</td>
-                  <td className="font-medium">
-                    {new Intl.NumberFormat(undefined, {
-                      style: "currency",
-                      currency: ord.currency,
-                    }).format(ord.totalAmount)}
-                  </td>
-                  <td>{ord.items?.length ?? 0} item(s)</td>
-                  <td className="text-secondary text-sm">
-                    {new Date(ord.createdAt).toLocaleString()}
-                  </td>
-                  <td>
-                    <div className="table-btn-group">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-ghost"
-                        onClick={() => setSelectedOrder(ord)}
-                      >
-                        Inspect
-                      </button>
-                      {ord.status === "PENDING_PAYMENT" && (
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-secondary"
-                          onClick={() => {
-                            setPayTargetOrder(ord);
-                            setPayModalOpen(true);
-                          }}
-                        >
-                          Simulate Pay
+              {visibleOrders.map((ord) => {
+                const units = ord.items.reduce((acc, i) => acc + Number(i.quantity), 0);
+                const distinct = new Set(ord.items.map((i) => i.productId)).size;
+                return (
+                  <tr key={ord.id}>
+                    <td className="font-mono text-xs">
+                      <span title={ord.id}>{ord.id.substring(0, 8)}…</span>
+                    </td>
+                    <td className="text-secondary text-xs">{new Date(ord.createdAt).toLocaleString()}</td>
+                    <td title={ord.items.map((i) => `${productNames[i.productId] ?? i.productId} × ${i.quantity}`).join("\n")}>
+                      {distinct} / {units}
+                    </td>
+                    <td className="font-medium">
+                      {new Intl.NumberFormat(undefined, { style: "currency", currency: ord.currency }).format(ord.totalAmount)}
+                    </td>
+                    <td><Badge status={ord.status} /></td>
+                    <td><Badge status={reservationStatusFor(ord)} /></td>
+                    <td><Badge status={paymentStatusFor(paymentsByOrder[ord.id])} /></td>
+                    <td className="text-secondary text-xs">{new Date(ord.updatedAt).toLocaleString()}</td>
+                    <td>
+                      <div className="table-btn-group">
+                        <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSelectedOrderId(ord.id)}>
+                          Open
                         </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                        {ord.status === "PENDING_PAYMENT" && (
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => {
+                              setPayTargetOrder(ord);
+                              setPayModalOpen(true);
+                            }}
+                          >
+                            Simulate Pay
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Order Details Modal */}
-      {selectedOrder && (
+      {/* Order Details */}
+      {selectedOrderId && (
         <Modal
           isOpen={true}
-          onClose={() => setSelectedOrder(null)}
-          title={`Order Details: ${selectedOrder.id}`}
-          maxWidth="lg"
-          footer={
-            <div className="modal-actions-bar">
-              {selectedOrder.status === "PENDING_PAYMENT" && (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn-danger"
-                    onClick={() => handleCancel(selectedOrder.id)}
-                    disabled={actionLoading}
-                  >
-                    Cancel Order
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => {
-                      setPayTargetOrder(selectedOrder);
-                      setPayModalOpen(true);
-                    }}
-                    disabled={actionLoading}
-                  >
-                    Simulate Payment
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => handleConfirm(selectedOrder.id)}
-                    disabled={actionLoading}
-                  >
-                    Confirm Order
-                  </button>
-                </>
-              )}
-              {selectedOrder.status === "CONFIRMED" && (
-                <button
-                  type="button"
-                  className="btn btn-success"
-                  onClick={() => handleFulfil(selectedOrder.id)}
-                  disabled={actionLoading}
-                >
-                  Fulfil Order
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setSelectedOrder(null)}
-              >
-                Close
-              </button>
-            </div>
-          }
+          onClose={() => setSelectedOrderId(null)}
+          title={`Order ${selectedOrderId}`}
+          maxWidth="xl"
         >
-          <div className="details-grid">
-            <div className="detail-item">
-              <span className="detail-label">Status</span>
-              <span className="detail-value">
-                <Badge status={selectedOrder.status} />
-              </span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Total Amount</span>
-              <span className="detail-value font-medium text-lg">
-                {selectedOrder.currency} {selectedOrder.totalAmount}
-              </span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Idempotency Key</span>
-              <span className="detail-value font-mono text-xs text-break">
-                {selectedOrder.idempotencyKey}
-              </span>
-            </div>
-            <div className="detail-item">
-              <span className="detail-label">Created At</span>
-              <span className="detail-value">
-                {new Date(selectedOrder.createdAt).toLocaleString()}
-              </span>
-            </div>
-            {selectedOrder.confirmedAt && (
-              <div className="detail-item">
-                <span className="detail-label">Confirmed At</span>
-                <span className="detail-value text-success">
-                  {new Date(selectedOrder.confirmedAt).toLocaleString()}
-                </span>
-              </div>
-            )}
-            {selectedOrder.cancelledAt && (
-              <div className="detail-item">
-                <span className="detail-label">Cancelled At</span>
-                <span className="detail-value text-danger">
-                  {new Date(selectedOrder.cancelledAt).toLocaleString()}
-                </span>
-              </div>
-            )}
-            {selectedOrder.fulfilledAt && (
-              <div className="detail-item">
-                <span className="detail-label">Fulfilled At</span>
-                <span className="detail-value text-success">
-                  {new Date(selectedOrder.fulfilledAt).toLocaleString()}
-                </span>
-              </div>
-            )}
-          </div>
-
-          <h4 className="mt-4 mb-2">Line Items</h4>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Product ID</th>
-                <th>Quantity</th>
-                <th>Unit Price</th>
-                <th>Line Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {selectedOrder.items?.map((item) => (
-                <tr key={item.id}>
-                  <td className="font-mono text-xs">{item.productId}</td>
-                  <td>{item.quantity}</td>
-                  <td>{selectedOrder.currency} {Number(item.unitPrice).toFixed(2)}</td>
-                  <td className="font-medium">{selectedOrder.currency} {Number(item.lineTotal ?? item.totalPrice ?? (item.quantity * item.unitPrice)).toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <h4 className="mt-4 mb-2">Stock Reservations</h4>
-          {selectedOrder.reservations && selectedOrder.reservations.length > 0 ? (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Reservation ID</th>
-                  <th>Warehouse ID</th>
-                  <th>Product ID</th>
-                  <th>Quantity</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selectedOrder.reservations.map((res) => (
-                  <tr key={res.id}>
-                    <td className="font-mono text-xs">{res.id}</td>
-                    <td className="font-mono text-xs">{res.warehouseId}</td>
-                    <td className="font-mono text-xs">{res.productId}</td>
-                    <td className="font-medium">{res.quantity}</td>
-                    <td>
-                      <span className={`badge ${
-                        res.status === 'RESERVED' ? 'badge-primary' :
-                        res.status === 'FULFILLED' ? 'badge-success' :
-                        res.status === 'RELEASED' ? 'badge-secondary' : 'badge-warning'
-                      }`}>
-                        {res.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="text-secondary text-sm">No warehouse reservations recorded for this order.</p>
-          )}
+          <OrderDetailPanel orderId={selectedOrderId} onNotify={onNotify} onChanged={() => fetchOrders(true)} />
         </Modal>
       )}
 
