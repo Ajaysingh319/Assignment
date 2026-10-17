@@ -66,18 +66,32 @@ class KafkaBrokerIntegrationTest {
         consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
 
+
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProps)) {
             consumer.subscribe(Collections.singletonList(topic));
-            ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(5));
+
             boolean found = false;
-            for (ConsumerRecord<String, String> record : records) {
-                if (record.key().equals(aggregateId)) {
-                    assertThat(record.value()).isEqualTo(payload);
-                    found = true;
-                    break;
+            long deadline = System.nanoTime()
+                    + Duration.ofSeconds(20).toNanos();
+
+            while (!found && System.nanoTime() < deadline) {
+                ConsumerRecords<String, String> records =
+                        consumer.poll(Duration.ofMillis(500));
+
+                for (ConsumerRecord<String, String> record : records) {
+                    if (aggregateId.equals(record.key())) {
+                        assertThat(record.value()).isEqualTo(payload);
+                        found = true;
+                        break;
+                    }
                 }
             }
-            assertThat(found).isTrue();
+
+            assertThat(found)
+                    .as("Expected Kafka message with key %s within 20 seconds",
+                            aggregateId)
+                    .isTrue();
         }
+
     }
 }

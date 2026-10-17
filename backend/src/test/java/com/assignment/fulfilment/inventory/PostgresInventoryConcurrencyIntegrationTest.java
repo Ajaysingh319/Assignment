@@ -188,7 +188,7 @@ class PostgresInventoryConcurrencyIntegrationTest {
         );
 
         inventoryService.adjust(new AdjustInventoryRequest(productInStock.id(), warehouse.id(), 10L));
-        inventoryService.adjust(new AdjustInventoryRequest(productOutOfStock.id(), warehouse.id(), 0L));
+        inventoryService.adjust(new AdjustInventoryRequest(productOutOfStock.id(), warehouse.id(), 1L));
 
         UUID orderId = UUID.randomUUID();
         ReserveInventoryRequest multiItemRequest = new ReserveInventoryRequest(
@@ -206,5 +206,12 @@ class PostgresInventoryConcurrencyIntegrationTest {
         Inventory stockAfterRollback = inventoryRepository.findById(new InventoryId(productInStock.id(), warehouse.id())).orElseThrow();
         assertThat(stockAfterRollback.getAvailableQty()).isEqualTo(10L);
         assertThat(stockAfterRollback.getReservedQty()).isEqualTo(0L);
+
+        Inventory outOfStockAfterRollback = inventoryRepository
+                .findById(new InventoryId(productOutOfStock.id(), warehouse.id()))
+                .orElseThrow();
+
+        assertThat(outOfStockAfterRollback.getAvailableQty()).isEqualTo(1L);
+        assertThat(outOfStockAfterRollback.getReservedQty()).isEqualTo(0L);
     }
 }
